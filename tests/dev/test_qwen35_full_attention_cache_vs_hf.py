@@ -146,7 +146,9 @@ def main() -> None:
             gate=g,
         )
 
-        q1, k1, v1, g1 = our_attn.get_new_kv_cache(x_decode, seq_len)
+        q1, k1, v1, g1 = our_attn.get_new_kv_cache(
+            x_decode, torch.tensor([seq_len], dtype=torch.long)
+        )
         k_cache[:, seq_len : seq_len + 1, :] = k1.squeeze(0)
         v_cache[:, seq_len : seq_len + 1, :] = v1.squeeze(0)
         mask_decode = torch.full((1, 1, 1, st), float("-inf"), dtype=torch.float16)
@@ -167,4 +169,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -177,6 +177,7 @@ class Qwen35RMSNorm(nn.Module):
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
+        self.hidden_size = hidden_size
         # Qwen3.5 uses output * (1 + weight)
         self.weight = nn.Parameter(torch.zeros(hidden_size))
         self.eps = eps
@@ -184,15 +185,14 @@ class Qwen35RMSNorm(nn.Module):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         x = hidden_states
         doubled = torch.cat([x, -x], dim=-1)
-        hidden_size = hidden_states.shape[-1]
         normed = F.layer_norm(
             doubled,
-            normalized_shape=(2 * hidden_size,),
+            normalized_shape=(2 * self.hidden_size,),
             weight=None,
             bias=None,
             eps=float(self.eps),
         )
-        normed = normed[..., :hidden_size]
+        normed = normed[..., : self.hidden_size]
         scale = 1.0 + self.weight.to(normed.dtype, copy=False).to(normed.device, copy=False)
         return normed * scale
 
@@ -202,6 +202,7 @@ class Qwen35RMSNormGated(nn.Module):
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
+        self.hidden_size = hidden_size
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.eps = eps
 
@@ -210,15 +211,14 @@ class Qwen35RMSNormGated(nn.Module):
         # concat([x, -x]) -> zero mean, LayerNorm variance equals mean(x^2).
         x = hidden_states
         doubled = torch.cat([x, -x], dim=-1)
-        hidden_size = hidden_states.shape[-1]
         normed = F.layer_norm(
             doubled,
-            normalized_shape=(2 * hidden_size,),
+            normalized_shape=(2 * self.hidden_size,),
             weight=None,
             bias=None,
             eps=float(self.eps),
         )
-        normed = normed[..., :hidden_size]
+        normed = normed[..., : self.hidden_size]
         out = normed * self.weight.to(hidden_states.dtype)
         out = out * F.silu(gate.to(hidden_states.dtype))
         return out
@@ -265,9 +265,9 @@ class Qwen35RotaryEmbedding(nn.Module):
         return cos, sin
 
 
-def _rotate_half(x: torch.Tensor) -> torch.Tensor:
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+def _rotate_half(x: torch.Tensor, half_dim: int) -> torch.Tensor:
+    x1 = x[..., :half_dim]
+    x2 = x[..., half_dim:]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -278,6 +278,7 @@ def _apply_rotary_partial(
     sin: torch.Tensor,
     rotary_dim: int,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    half_rotary_dim = rotary_dim // 2
     cos = cos.unsqueeze(1)
     sin = sin.unsqueeze(1)
     q_rot = q[..., :rotary_dim]
@@ -285,8 +286,8 @@ def _apply_rotary_partial(
     q_pass = q[..., rotary_dim:]
     k_pass = k[..., rotary_dim:]
 
-    q_rot = (q_rot * cos) + (_rotate_half(q_rot) * sin)
-    k_rot = (k_rot * cos) + (_rotate_half(k_rot) * sin)
+    q_rot = (q_rot * cos) + (_rotate_half(q_rot, half_rotary_dim) * sin)
+    k_rot = (k_rot * cos) + (_rotate_half(k_rot, half_rotary_dim) * sin)
     return torch.cat([q_rot, q_pass], dim=-1), torch.cat([k_rot, k_pass], dim=-1)
 
 
@@ -315,9 +316,8 @@ def apply_rotary_pos_emb_single(
 def _repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     if n_rep == 1:
         return hidden_states
-    bsz, n_kv, seq_len, head_dim = hidden_states.shape
     hidden_states = hidden_states[:, :, None, :, :].repeat(1, 1, n_rep, 1, 1)
-    return hidden_states.view(bsz, n_kv * n_rep, seq_len, head_dim)
+    return hidden_states.flatten(1, 2)
 
 
 class Qwen35MLP(nn.Module):
@@ -370,16 +370,24 @@ class Qwen35FullAttention(nn.Module):
     def _project_qkvg(
         self, hidden_states: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        bsz, seq_len, _ = hidden_states.shape
         hs = hidden_states.permute(0, 2, 1).unsqueeze(2).to(MODEL_DTYPE)
-        q_all = self.q_proj(hs).squeeze(2).transpose(1, 2).view(
-            bsz, seq_len, self.num_heads, self.head_dim * 2
+        q_all = (
+            self.q_proj(hs)
+            .view(1, self.num_heads, self.head_dim * 2, -1)
+            .permute(0, 1, 3, 2)
+        )  # [B,H,S,2D]
+        query_states = q_all[..., : self.head_dim]
+        gate = q_all[..., self.head_dim :].permute(0, 2, 1, 3).flatten(2, 3)
+        key_states = (
+            self.k_proj(hs)
+            .view(1, self.num_kv_heads, self.head_dim, -1)
+            .permute(0, 1, 3, 2)
         )
-        query_states, gate = torch.chunk(q_all, 2, dim=-1)  # [B,S,H,D], [B,S,H,D]
-        gate = gate.reshape(bsz, seq_len, self.num_heads * self.head_dim)  # [B,S,H*D]
-        query_states = query_states.transpose(1, 2)  # [B,H,S,D]
-        key_states = self.k_proj(hs).view(bsz, self.num_kv_heads, self.head_dim, seq_len).permute(0, 1, 3, 2)
-        value_states = self.v_proj(hs).view(bsz, self.num_kv_heads, self.head_dim, seq_len).permute(0, 1, 3, 2)
+        value_states = (
+            self.v_proj(hs)
+            .view(1, self.num_kv_heads, self.head_dim, -1)
+            .permute(0, 1, 3, 2)
+        )
         return query_states, key_states, value_states, gate
 
     def _query_for_scores(self, query_states: torch.Tensor) -> torch.Tensor:
@@ -389,16 +397,14 @@ class Qwen35FullAttention(nn.Module):
         return query_states[..., : self.head_dim]
 
     def get_new_kv_cache(
-        self, hidden_states: torch.Tensor, current_pos: torch.LongTensor | int
+        self, hidden_states: torch.Tensor, current_pos: torch.LongTensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # TODO(parity): Keep API/shape contract aligned with qwen_model.py::QwenAttention.get_new_kv_cache.
         # Current version is a bring-up approximation for full_attention-only layers.
         query_states, key_states, value_states, gate = self._project_qkvg(hidden_states)
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
-        pos = current_pos if isinstance(current_pos, torch.Tensor) else torch.tensor([current_pos], dtype=torch.long)
-        if pos.dim() == 0:
-            pos = pos.unsqueeze(0)
+        pos = current_pos.reshape(1).to(device=hidden_states.device, dtype=torch.long)
         cos, sin = self.rotary.get(hidden_states, pos)
         query_states, key_states = apply_rotary_pos_emb_single(
             query_states, key_states, cos, sin, self.rotary.rotary_dim
@@ -447,8 +453,9 @@ class Qwen35FullAttention(nn.Module):
     ) -> torch.Tensor:
         # TODO(parity): Mirror qwen_model.py::QwenAttention.forward_regular exactly
         # once linear_attention/shared-cache contracts are finalized for Qwen3.5.
-        bsz, q_len, _ = hidden_states.shape
         k_cache, v_cache = kv_cache_layer
+
+        # Match qwen_model.py: keep a fixed cache length contract for CoreML.
         k_cache = k_cache[..., : self.config.state_length, :]
         v_cache = v_cache[..., : self.config.state_length, :]
 
@@ -461,19 +468,10 @@ class Qwen35FullAttention(nn.Module):
             * self.scale
         )
         if causal_mask is not None:
-            q_seq_len = query_states.shape[-2]
-            k_seq_len = key_states.shape[-2]
-            if causal_mask.shape[-1] != self.config.state_length:
-                raise ValueError(
-                    "ANE cache path requires fixed-length mask width == state_length "
-                    f"({self.config.state_length}), got {causal_mask.shape[-1]}."
-                )
-            attn_weights = attn_weights + causal_mask.to(MODEL_DTYPE)[:, :, :q_seq_len, :k_seq_len]
+            attn_weights = attn_weights + causal_mask.to(MODEL_DTYPE)
         attn_weights = torch.softmax(attn_weights, dim=-1)
         attn_output = torch.matmul(attn_weights, value_states.to(MODEL_DTYPE))
-        attn_output = attn_output.transpose(1, 2).contiguous().reshape(
-            bsz, q_len, self.num_heads * self.head_dim
-        )
+        attn_output = attn_output.transpose(1, 2).contiguous().flatten(2, 3)
         return self._project_output(attn_output, hidden_states, gate=gate)
 
     def forward_prefill(
@@ -487,6 +485,8 @@ class Qwen35FullAttention(nn.Module):
         # TODO(parity): Mirror qwen_model.py::QwenAttention.forward_prefill exactly
         # once linear_attention/shared-cache contracts are finalized for Qwen3.5.
         k_cache, v_cache = kv_cache_layer
+
+        # Match qwen_model.py: keep a fixed cache length contract for CoreML.
         k_cache = k_cache[..., : self.config.state_length, :]
         v_cache = v_cache[..., : self.config.state_length, :]
 
@@ -501,20 +501,10 @@ class Qwen35FullAttention(nn.Module):
             * self.scale
         )
         if causal_mask is not None:
-            q_seq_len = query_states.shape[2]
-            k_seq_len = key_states.shape[2]
-            if causal_mask.shape[-1] != self.config.state_length:
-                raise ValueError(
-                    "ANE cache path requires fixed-length mask width == state_length "
-                    f"({self.config.state_length}), got {causal_mask.shape[-1]}."
-                )
-            mask_slice = causal_mask.to(MODEL_DTYPE)[:, :, :q_seq_len, :k_seq_len]
-            attn_weights = attn_weights + mask_slice
+            attn_weights = attn_weights + causal_mask.to(MODEL_DTYPE)
         attn_weights = torch.softmax(attn_weights, dim=-1)
         attn_output = torch.matmul(attn_weights, value_states.to(MODEL_DTYPE))
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        bsz, seq_len, num_heads, head_dim = attn_output.shape
-        attn_output = attn_output.reshape(bsz, seq_len, num_heads * head_dim)
+        attn_output = attn_output.transpose(1, 2).contiguous().flatten(2, 3)
         return self._project_output(attn_output, hidden_states, gate=gate)
 
     def forward(
@@ -611,29 +601,28 @@ class Qwen35LinearAttention(nn.Module):
         g: torch.Tensor,
         beta: torch.Tensor,
         chunk_size: int = 64,
+        initial_state: torch.Tensor | None = None,
+        output_final_state: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # ANE friendly not sure: this kernel uses chunked triangular recurrences and
-        # dynamic padding. It is parity-oriented and may require MIL-level lowering
-        # rewrites for guaranteed ANE execution.
-        # All inputs: [B, S, H, D?] for q/k/v and [B, S, H] for g/beta
+        # Mirror HF torch fallback as closely as possible for parity bring-up.
         initial_dtype = query.dtype
-        query = _l2norm(query.to(torch.float32), dim=-1)
-        key = _l2norm(key.to(torch.float32), dim=-1)
-        value = value.to(torch.float32)
-        beta = beta.to(torch.float32)
-        g = g.to(torch.float32)
+        query = _l2norm(query, dim=-1)
+        key = _l2norm(key, dim=-1)
+        query, key, value, beta, g = [
+            x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
+        ]
 
-        query, key, value, beta, g = [x.transpose(1, 2).contiguous() for x in (query, key, value, beta, g)]
         batch_size, num_heads, seq_len, k_dim = key.shape
         v_dim = value.shape[-1]
-        pad = (chunk_size - seq_len % chunk_size) % chunk_size
-        query = F.pad(query, (0, 0, 0, pad))
-        key = F.pad(key, (0, 0, 0, pad))
-        value = F.pad(value, (0, 0, 0, pad))
-        beta = F.pad(beta, (0, pad))
-        g = F.pad(g, (0, pad))
-        total_len = seq_len + pad
-        query = query * (1.0 / math.sqrt(query.shape[-1]))
+        pad_size = (chunk_size - seq_len % chunk_size) % chunk_size
+        query = F.pad(query, (0, 0, 0, pad_size))
+        key = F.pad(key, (0, 0, 0, pad_size))
+        value = F.pad(value, (0, 0, 0, pad_size))
+        beta = F.pad(beta, (0, pad_size))
+        g = F.pad(g, (0, pad_size))
+        total_sequence_length = seq_len + pad_size
+        scale = 1 / (query.shape[-1] ** 0.5)
+        query = query * scale
 
         v_beta = value * beta.unsqueeze(-1)
         k_beta = key * beta.unsqueeze(-1)
@@ -641,11 +630,11 @@ class Qwen35LinearAttention(nn.Module):
             x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, value, k_beta, v_beta)
         ]
         g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
-        mask_diag = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
+        mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
 
         g = g.cumsum(dim=-1)
-        decay = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp()).tril()
-        attn = -((k_beta @ key.transpose(-1, -2)) * decay).masked_fill(mask_diag, 0)
+        decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
+        attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
         for i in range(1, chunk_size):
             row = attn[..., i, :i].clone()
             sub = attn[..., :i, :i].clone()
@@ -653,25 +642,32 @@ class Qwen35LinearAttention(nn.Module):
         attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
         value = attn @ v_beta
         k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
-        recurrent = torch.zeros(batch_size, num_heads, k_dim, v_dim, dtype=value.dtype, device=value.device)
-        out = torch.zeros_like(value)
-        causal_upper = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
+        last_recurrent_state = (
+            torch.zeros(batch_size, num_heads, k_dim, v_dim).to(value)
+            if initial_state is None
+            else initial_state.to(value)
+        )
+        core_attn_out = torch.zeros_like(value)
+        mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
 
-        for i in range(total_len // chunk_size):
+        for i in range(0, total_sequence_length // chunk_size):
             q_i, k_i, v_i = query[:, :, i], key[:, :, i], value[:, :, i]
-            attn_i = (q_i @ k_i.transpose(-1, -2) * decay[:, :, i]).masked_fill_(causal_upper, 0)
-            v_prime = k_cumdecay[:, :, i] @ recurrent
+            attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]).masked_fill_(mask, 0)
+            v_prime = k_cumdecay[:, :, i] @ last_recurrent_state
             v_new = v_i - v_prime
-            inter = (q_i * g[:, :, i, :, None].exp()) @ recurrent
-            out[:, :, i] = inter + attn_i @ v_new
-            recurrent = (
-                recurrent * g[:, :, i, -1, None, None].exp()
+            attn_inter = (q_i * g[:, :, i, :, None].exp()) @ last_recurrent_state
+            core_attn_out[:, :, i] = attn_inter + attn @ v_new
+            last_recurrent_state = (
+                last_recurrent_state * g[:, :, i, -1, None, None].exp()
                 + (k_i * (g[:, :, i, -1, None] - g[:, :, i]).exp()[..., None]).transpose(-1, -2) @ v_new
             )
 
-        out = out.reshape(out.shape[0], out.shape[1], -1, out.shape[-1])[:, :, :seq_len]
-        out = out.transpose(1, 2).contiguous().to(initial_dtype)
-        return out, recurrent
+        if not output_final_state:
+            last_recurrent_state = None
+        core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], core_attn_out.shape[1], -1, core_attn_out.shape[-1])
+        core_attn_out = core_attn_out[:, :, :seq_len]
+        core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
+        return core_attn_out, last_recurrent_state
 
     @staticmethod
     def _recurrent_gated_delta_rule(
@@ -681,23 +677,21 @@ class Qwen35LinearAttention(nn.Module):
         g: torch.Tensor,
         beta: torch.Tensor,
         recurrent_state: torch.Tensor,
+        output_final_state: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # ANE friendly not sure: sequential recurrent update loop over seq_len may
-        # need unrolling/custom lowering for ANE export.
         initial_dtype = query.dtype
-        query = _l2norm(query.to(torch.float32), dim=-1)
-        key = _l2norm(key.to(torch.float32), dim=-1)
-        value = value.to(torch.float32)
-        beta = beta.to(torch.float32)
-        g = g.to(torch.float32)
-
-        query, key, value, beta, g = [x.transpose(1, 2).contiguous() for x in (query, key, value, beta, g)]
+        query = _l2norm(query, dim=-1)
+        key = _l2norm(key, dim=-1)
+        query, key, value, beta, g = [
+            x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
+        ]
         bsz, n_heads, seq_len, _ = key.shape
         v_dim = value.shape[-1]
-        query = query * (1.0 / math.sqrt(query.shape[-1]))
+        scale = 1 / (query.shape[-1] ** 0.5)
+        query = query * scale
 
         out = torch.zeros(bsz, n_heads, seq_len, v_dim, dtype=value.dtype, device=value.device)
-        state = recurrent_state.to(value.dtype)
+        state = recurrent_state.to(value)
         for i in range(seq_len):
             q_t = query[:, :, i]
             k_t = key[:, :, i]
@@ -709,6 +703,8 @@ class Qwen35LinearAttention(nn.Module):
             delta = (v_t - kv_mem) * beta_t
             state = state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)
             out[:, :, i] = (state * q_t.unsqueeze(-1)).sum(dim=-2)
+        if not output_final_state:
+            state = None
         out = out.transpose(1, 2).contiguous().to(initial_dtype)
         return out, state
 
@@ -740,7 +736,7 @@ class Qwen35LinearAttention(nn.Module):
         value = value.reshape(bsz, seq_len, self.num_v_heads, self.head_v_dim)
 
         beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias.to(torch.float32))
+        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
         if self.num_v_heads // self.num_k_heads > 1:
             rep = self.num_v_heads // self.num_k_heads
             query = query.repeat_interleave(rep, dim=2)
@@ -755,11 +751,11 @@ class Qwen35LinearAttention(nn.Module):
 
         if has_previous_state and seq_len == 1:
             core, next_recurrent_state = self._recurrent_gated_delta_rule(
-                query, key, value, g=g, beta=beta, recurrent_state=recurrent_state
+                query, key, value, g=g, beta=beta, recurrent_state=recurrent_state, output_final_state=True
             )
         else:
             core, next_recurrent_state = self._chunk_gated_delta_rule(
-                query, key, value, g=g, beta=beta
+                query, key, value, g=g, beta=beta, initial_state=None, output_final_state=True
             )
 
         core = core.reshape(-1, self.head_v_dim)
@@ -932,12 +928,13 @@ class Qwen35Model(nn.Module):
     ) -> torch.Tensor:
         """Build ANE-friendly fixed-width cache mask [1, 1, q_len, state_length]."""
         cache_len = self.config.state_length
-        mask = torch.full((1, 1, q_len, cache_len), float("-inf"), dtype=dtype, device=device)
-        for i in range(q_len):
-            # Token i in this chunk can attend through absolute position current_pos + i.
-            valid_k = min(cache_len, current_pos + i + 1)
-            mask[:, :, i, :valid_k] = 0
-        return mask
+        q_idx = torch.arange(q_len, device=device).unsqueeze(-1)  # [q_len, 1]
+        k_idx = torch.arange(cache_len, device=device).unsqueeze(0)  # [1, cache_len]
+        allowed = k_idx <= (current_pos + q_idx)  # [q_len, cache_len]
+        zeros = torch.zeros((q_len, cache_len), dtype=dtype, device=device)
+        neg_inf = torch.full((q_len, cache_len), float("-inf"), dtype=dtype, device=device)
+        mask_2d = torch.where(allowed, zeros, neg_inf)
+        return mask_2d.unsqueeze(0).unsqueeze(0)
 
     def _process_layer_prefill(
         self,

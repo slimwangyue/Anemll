@@ -117,8 +117,18 @@ def main() -> None:
 
         # Cache prefill + decode
         hf_cache = Qwen3_5DynamicCache(hf_cfg)
-        hf_prefill = hf_layer.linear_attn(hidden_states=x, cache_params=hf_cache, attention_mask=None)
-        hf_decode = hf_layer.linear_attn(hidden_states=x1, cache_params=hf_cache, attention_mask=None)
+        hf_prefill = hf_layer.linear_attn(
+            hidden_states=x,
+            cache_params=hf_cache,
+            cache_position=torch.arange(args.seq_len, dtype=torch.long),
+            attention_mask=None,
+        )
+        hf_decode = hf_layer.linear_attn(
+            hidden_states=x1,
+            cache_params=hf_cache,
+            cache_position=torch.tensor([args.seq_len], dtype=torch.long),
+            attention_mask=None,
+        )
 
         conv_state = torch.zeros((1, our_attn.conv_dim, our_attn.linear_conv_kernel_dim), dtype=torch.float16)
         rec_state = torch.zeros((1, our_attn.num_v_heads, our_attn.head_k_dim, our_attn.head_v_dim), dtype=torch.float32)
@@ -144,4 +154,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
