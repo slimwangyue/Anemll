@@ -24,6 +24,24 @@ TEST_DEVICE = "cpu"
 CONTEXT_LENGTH = 256
 STATE_LENGTH = 256
 
+# ANE has a ~1024 limit for the channel dimension (dim[1]) in stateful models.
+# States with dim[1] > 1024 fail on ANE.  The linear-attention conv_state has
+# dim[1] = conv_dim (e.g. 8192 for Qwen3.5-4B), so we reshape it for export:
+#   (layers, conv_dim, conv_kernel) → (layers, ane_dim, conv_kernel * group)
+# where group = ceil(conv_dim / ANE_STATE_MAX_DIM).
+ANE_STATE_MAX_DIM = 1024
+
+
+def ane_conv_state_shape(conv_dim: int, conv_kernel: int):
+    """Return (ane_dim1, ane_dim2) for ANE-safe conv_state storage."""
+    if conv_dim <= ANE_STATE_MAX_DIM:
+        return conv_dim, conv_kernel
+    group = (conv_dim + ANE_STATE_MAX_DIM - 1) // ANE_STATE_MAX_DIM
+    ane_dim1 = conv_dim // group
+    ane_dim2 = conv_kernel * group
+    assert ane_dim1 * group == conv_dim, f"conv_dim={conv_dim} not evenly divisible by group={group}"
+    return ane_dim1, ane_dim2
+
 
 @dataclass
 class Qwen35TextConfig:
@@ -956,11 +974,20 @@ class Qwen35LinearAttention(nn.Module):
             for idx, x in enumerate((query, key, value, k_beta, v_beta))
         ]
         g = g.reshape(batch_size, num_heads, n_chunks, chunk_size)
-        mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
 
-        g = g.cumsum(dim=-1)
-        decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
-        attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
+        # ANE-legal masks: use fp tensors instead of bool masks + masked_fill/tril
+        # Lower-triangular ones matrix for cumsum replacement and tril masking
+        tril_ones = torch.tril(torch.ones(chunk_size, chunk_size, device=query.device, dtype=math_dtype))
+        # Strictly-lower-triangular mask (zeros on and above diagonal) for masked_fill replacement
+        strict_lower = torch.tril(torch.ones(chunk_size, chunk_size, device=query.device, dtype=math_dtype), diagonal=-1)
+
+        # ANE-legal cumsum: matmul with lower-triangular ones instead of cumsum op
+        g = (tril_ones @ g.unsqueeze(-1)).squeeze(-1)
+        # ANE-legal tril: multiply by tril mask instead of .tril() method
+        decay_raw = (g.unsqueeze(-1) - g.unsqueeze(-2)) * tril_ones
+        decay_mask = (decay_raw.exp().float()) * tril_ones
+        # ANE-legal masked_fill: multiply by strict-lower triangular mask instead of masked_fill
+        attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask) * strict_lower
         attn_rows = [attn[..., 0:1, :]]
         for i in range(1, chunk_size):
             row = attn[..., i, :i].clone()
@@ -978,12 +1005,13 @@ class Qwen35LinearAttention(nn.Module):
             if initial_state is None
             else initial_state.to(value)
         )
-        mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
+        # ANE-legal: use fp mask instead of bool mask + masked_fill
+        strict_lower_diag1 = torch.tril(torch.ones(chunk_size, chunk_size, device=query.device, dtype=math_dtype))
         core_attn_chunks = []
 
         for i in range(0, total_sequence_length // chunk_size):
             q_i, k_i, v_i = query[:, :, i], key[:, :, i], value[:, :, i]
-            attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]).masked_fill(mask, 0)
+            attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]) * strict_lower_diag1
             v_prime = k_cumdecay[:, :, i] @ last_recurrent_state
             v_new = v_i - v_prime
             attn_inter = (q_i * g[:, :, i, :, None].exp()) @ last_recurrent_state
@@ -1595,7 +1623,12 @@ class Qwen35Model(nn.Module):
             if linear_conv_state is None or linear_recurrent_state is None:
                 raise ValueError("Linear-attention export requires local linear state tensors")
             x = layer.input_layernorm(hidden_states)
-            conv_state = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            # Conv state is stored in ANE-safe shape (layers, ane_dim1, ane_dim2);
+            # reshape to computation shape (1, conv_dim, conv_kernel) for the layer.
+            conv_dim = layer.self_attn.conv_dim
+            conv_kernel = layer.self_attn.linear_conv_kernel_dim
+            conv_state_flat = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            conv_state = conv_state_flat.reshape(1, conv_dim, conv_kernel)
             recurrent_state = linear_recurrent_state[local_layer_idx : local_layer_idx + 1]
             attn_out, next_conv, next_rec = layer.self_attn.forward_regular(
                 hidden_states=x,
@@ -1607,7 +1640,9 @@ class Qwen35Model(nn.Module):
                 expected_seq_len=1,
                 force_recurrent=True,
             )
-            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv
+            # Reshape next_conv back to ANE-safe shape before writing.
+            ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
+            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv.reshape(1, ane_dim1, ane_dim2)
             linear_recurrent_state[local_layer_idx : local_layer_idx + 1] = next_rec.to(
                 linear_recurrent_state.dtype
             )
@@ -1802,7 +1837,11 @@ class Qwen35Model(nn.Module):
                 layer.self_attn.export_expected_batch_size = int(expected_batch_size)
             if expected_seq_len is not None:
                 layer.self_attn.export_expected_seq_len = int(expected_seq_len)
-            conv_state = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            # Conv state is stored in ANE-safe shape; reshape to computation shape.
+            conv_dim = layer.self_attn.conv_dim
+            conv_kernel = layer.self_attn.linear_conv_kernel_dim
+            conv_state_flat = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            conv_state = conv_state_flat.reshape(1, conv_dim, conv_kernel)
             recurrent_state = linear_recurrent_state[local_layer_idx : local_layer_idx + 1]
             attn_out, next_conv, next_rec = layer.self_attn.forward_prefill_export(
                 hidden_states=x,
@@ -1810,7 +1849,9 @@ class Qwen35Model(nn.Module):
                 recurrent_state=recurrent_state,
                 has_previous_state=True,
             )
-            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv
+            # Reshape next_conv back to ANE-safe shape before writing.
+            ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
+            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv.reshape(1, ane_dim1, ane_dim2)
             linear_recurrent_state[local_layer_idx : local_layer_idx + 1] = next_rec.to(
                 linear_recurrent_state.dtype
             )
@@ -1821,16 +1862,19 @@ class Qwen35Model(nn.Module):
         x = layer.input_layernorm(hidden_states)
         query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache_prefill(x, position_ids)
 
-        pos = current_pos
         seq_len = expected_seq_len if expected_seq_len is not None else key_states.shape[2]
-        fixed_mask = self._build_fixed_cache_mask(
-            q_len=seq_len, current_pos=pos, dtype=MODEL_DTYPE, device=hidden_states.device
-        )
+        # Use the caller-provided causal_mask instead of building one internally.
+        # _build_fixed_cache_mask uses torch.where which compiles to 'select' — not ANE-legal.
+        # The caller already provides the correct mask as a model input.
+        fixed_mask = causal_mask
         if k_cache is not None and v_cache is not None:
             key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
             value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
-            key_cache[:, pos:pos + seq_len, :] = key_states.squeeze(0)
-            value_cache[:, pos:pos + seq_len, :] = value_states.squeeze(0)
+            # Use static bounds 0:seq_len for ANE compatibility.
+            # Dynamic pos:pos+seq_len compiles to slice_update with unresolved params → ANE failure.
+            # Prefill always writes from position 0.
+            key_cache[:, 0:seq_len, :] = key_states.squeeze(0)
+            value_cache[:, 0:seq_len, :] = value_states.squeeze(0)
             k_cache[local_layer_idx : local_layer_idx + 1] = key_cache.unsqueeze(0)
             v_cache[local_layer_idx : local_layer_idx + 1] = value_cache.unsqueeze(0)
         else:
@@ -1840,8 +1884,8 @@ class Qwen35Model(nn.Module):
             value_idx = local_layer_idx + local_num_layers
             key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0).clone()
             value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0).clone()
-            key_cache[:, pos:pos + seq_len, :] = key_states.squeeze(0)
-            value_cache[:, pos:pos + seq_len, :] = value_states.squeeze(0)
+            key_cache[:, 0:seq_len, :] = key_states.squeeze(0)
+            value_cache[:, 0:seq_len, :] = value_states.squeeze(0)
             kv_cache_0[key_idx:key_idx + 1] = key_cache.unsqueeze(0)
             kv_cache_0[value_idx:value_idx + 1] = value_cache.unsqueeze(0)
         attn_out = layer.self_attn.forward_prefill(

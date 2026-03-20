@@ -25,6 +25,7 @@ from ..models.qwen3_5_model import (
     TEST_DEVICE,
     Qwen35Config,
     Qwen35ForCausalLM,
+    ane_conv_state_shape,
 )
 
 if SklearnConvergenceWarning is not None:
@@ -106,10 +107,11 @@ class Qwen35Converter(BaseConverter):
                 + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
             )
             conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
+            ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
             states.append(
                 ct.StateType(
                     wrapped_type=ct.TensorType(
-                        shape=(cfg.num_hidden_layers, conv_dim, conv_kernel),
+                        shape=(cfg.num_hidden_layers, ane_dim1, ane_dim2),
                         dtype=np.float16,
                     ),
                     name=f"{prefix}linear_conv_state",
@@ -188,10 +190,11 @@ class Qwen35Converter(BaseConverter):
                 + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
             )
             conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
+            ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
             states.append(
                 ct.StateType(
                     wrapped_type=ct.TensorType(
-                        shape=(num_layers, conv_dim, conv_kernel),
+                        shape=(num_layers, ane_dim1, ane_dim2),
                         dtype=np.float16,
                     ),
                     name=f"{prefix}linear_conv_state",
@@ -444,10 +447,11 @@ class Qwen35Converter(BaseConverter):
                         + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
                     )
                     conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
+                    ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
                     self.register_buffer(
                         "linear_conv_state",
                         torch.zeros(
-                            (self.local_num_layers, conv_dim, conv_kernel),
+                            (self.local_num_layers, ane_dim1, ane_dim2),
                             dtype=MODEL_DTYPE,
                             device=TEST_DEVICE,
                         ),
@@ -588,10 +592,11 @@ class Qwen35Converter(BaseConverter):
                         + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
                     )
                     conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
+                    ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
                     self.register_buffer(
                         "linear_conv_state",
                         torch.zeros(
-                            (self.local_num_layers, conv_dim, conv_kernel),
+                            (self.local_num_layers, ane_dim1, ane_dim2),
                             dtype=MODEL_DTYPE,
                             device=TEST_DEVICE,
                         ),

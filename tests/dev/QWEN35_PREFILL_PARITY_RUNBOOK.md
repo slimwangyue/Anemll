@@ -563,3 +563,117 @@ python -m anemll.ane_converter.qwen3_5_converter \
 | `.mlmodelc` RuntimeError manifest | Use `ct.models.CompiledMLModel(path, compute_unit)` not `ct.models.MLModel()`. |
 | Empty output with nohup | Use `python -u` or `PYTHONUNBUFFERED=1`. |
 | `torch_chunk4.npy` shape mismatch | PyTorch saves `(1, 256, 2560)` but CoreML returns `(1, 1, 2560)`. Compare `torch[:, 0:1, :]` only. |
+
+---
+
+## 11. Critical Findings & Resolutions
+
+This section documents the root causes of ANE failures for Qwen3.5-4B prefill and the fixes applied.
+
+### 11.1 Root Cause: ANE State Channel Dimension Limit (~1024)
+
+**Discovery**: After all 4 prefill chunks exported to CoreML successfully, ANE rejected every chunk with `ANEProgramProcessRequestDirect() Failed`. Seven rounds of binary-search testing (12+ test scripts, 40+ model variants) isolated the cause.
+
+**Root Cause**: ANE has an undocumented ~1024 limit on dim[1] (channel dimension) for CoreML `StateType` tensors when combined with computation ops. The linear-attention `conv_state` had shape `(num_layers, 8192, 4)` — dim[1]=8192 far exceeds this limit.
+
+**Threshold Testing**:
+
+| conv_state dim[1] | ANE Result |
+|-------------------|------------|
+| 8192 | ❌ FAIL |
+| 4096 | ❌ FAIL |
+| 2048 | ❌ FAIL |
+| **1024** | **✅ PASS** |
+| 512 | ✅ PASS |
+| 256 | ✅ PASS |
+
+**Key insight**: Individual ops (reduce_sum, softplus, exp, rsqrt, clip, split, tile, sigmoid, silu, concat, layer_norm) all passed ANE in isolation. The failure only occurred when a state with dim[1] > 1024 was used in the computation graph.
+
+**Fix**: Reshape `conv_state` from `(layers, conv_dim, conv_kernel)` to `(layers, ane_dim1, ane_dim2)` where `ane_dim1 ≤ 1024`:
+
+```python
+ANE_STATE_MAX_DIM = 1024
+
+def ane_conv_state_shape(conv_dim: int, conv_kernel: int):
+    """Return (ane_dim1, ane_dim2) for ANE-safe conv_state storage."""
+    if conv_dim <= ANE_STATE_MAX_DIM:
+        return conv_dim, conv_kernel
+    group = (conv_dim + ANE_STATE_MAX_DIM - 1) // ANE_STATE_MAX_DIM
+    ane_dim1 = conv_dim // group
+    ane_dim2 = conv_kernel * group
+    assert ane_dim1 * group == conv_dim
+    return ane_dim1, ane_dim2
+```
+
+For Qwen3.5-4B: `(8192, 4)` → `(1024, 32)` (same total bytes, lossless).
+
+The model code reshapes to computation shape before use and back to ANE shape after:
+```python
+# Before computation:
+conv_state = conv_state_flat.reshape(1, conv_dim, conv_kernel)  # (1, 8192, 4)
+
+# After computation, write back in ANE shape:
+ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
+linear_conv_state[idx] = next_conv.reshape(1, ane_dim1, ane_dim2)  # (1, 1024, 32)
+```
+
+**Files changed**:
+- `anemll/models/qwen3_5_model.py` — added `ANE_STATE_MAX_DIM`, `ane_conv_state_shape()`, reshape in both `_process_layer_regular_single_token_export_local_state` and `_process_layer_prefill_export_local_state`
+- `anemll/ane_converter/qwen3_5_converter.py` — updated `GetTransformerStates`, `GetChunkLocalTransformerStates`, FFNWrapper buffer, PrefillWrapper buffer
+
+**Validation**: All 4 prefill chunks pass ANE after this fix.
+
+### 11.2 CoreML Conversion: `int` Op from Dynamic `.shape` Query
+
+**Problem**: After applying the reshape fix, CoreML conversion failed with:
+```
+ERROR - converting 'int' op (located at: '3482'):
+TypeError: only 0-dimensional arrays can be converted to Python scalars
+```
+
+**Cause**: Querying `.shape` on a state tensor during JIT trace produces an `int` op in the trace graph that `coremltools` cannot convert:
+```python
+# BAD — produces int op in trace graph
+ane_shape = linear_conv_state[idx : idx + 1].shape
+linear_conv_state[idx : idx + 1] = next_conv.reshape(ane_shape)
+```
+
+**Fix**: Use static constants computed from module attributes instead:
+```python
+# GOOD — all constants, no int op in trace
+ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
+linear_conv_state[idx : idx + 1] = next_conv.reshape(1, ane_dim1, ane_dim2)
+```
+
+### 11.3 Non-ANE-Legal Ops Fixed Before State Reshape
+
+These ops were fixed in earlier iterations before the state dim limit was identified:
+
+| Op | Source | Fix |
+|----|--------|-----|
+| `cumsum` (6 per chunk) | `_chunk_gated_delta_rule` — scan accumulation | Replaced with `tril_ones @ g.unsqueeze(-1)` (triangular matmul) |
+| `select` (31 per chunk) | `masked_fill` with bool mask in delta rule | Replaced with `* strict_lower` (multiply by fp tril mask) |
+| Dynamic `slice_update` | `key_cache[:, pos:pos+seq_len, :]` in prefill | Changed to static `key_cache[:, 0:seq_len, :]` (prefill always starts at position 0) |
+| `torch.where` / `select` | `_build_fixed_cache_mask` | Eliminated — pass causal_mask as model input instead of building internally |
+
+### 11.4 Binary Search Methodology
+
+The systematic approach used to find the root cause:
+
+1. **Round 1**: Tested individual ops in isolation (reduce_sum, L2norm, gating, tile, split) → all ✅ PASS
+2. **Round 2**: Tested 1-state vs 2-state combinations → 2-state sometimes fails
+3. **Round 3**: Tested state shapes/sizes → large dim[1] fails even with 1 state
+4. **Round 4**: Tested conv_state update patterns (narrow+cat, slice assign) → all fail with large state
+5. **Round 5**: Tested conv projection + state → still fails with large dim[1]
+6. **Round 6**: Tested different shapes with same total bytes → dim[1]=8192 fails, dim[1]=32 passes
+7. **Round 7**: **Found the threshold** — dim[1]=2048 FAILS, dim[1]=1024 PASSES
+
+Test scripts preserved in `tests/dev/_binary_search_ops*.py` and `tests/dev/_verify_reshape_fix.py`.
+
+### 11.5 Remaining Known Issues
+
+| Issue | Status | Notes |
+|-------|--------|-------|
+| Decode path `pos:pos+1` dynamic slicing | ❌ Open | KV cache writes use `k_cache[:, :, pos:pos+1, :]` which produces dynamic `slice_update` — not ANE-legal. Needs same static-slice treatment as prefill. |
+| `overflow encountered in cast` warning | ⚠️ Cosmetic | During MIL optimization — fp16 overflow in constant folding. Does not affect correctness. |
+| Unused state inputs (single-type chunks) | ⚠️ Edge case | A chunk with ONLY linear-attention layers has unused k_cache/v_cache states → `handle_unused_inputs` error. Real chunks have mixed layers so this doesn't occur in practice. |
