@@ -1725,11 +1725,16 @@ class Qwen35Model(nn.Module):
         )
         key_idx = layer_idx
         value_idx = layer_idx + self.config.num_hidden_layers
-        self.kv_cache_0[key_idx:key_idx + 1, :, pos:pos + seq_len, :] = key_states
-        self.kv_cache_0[value_idx:value_idx + 1, :, pos:pos + seq_len, :] = value_states
+        # Avoid consuming a freshly written CoreML state tensor in the same
+        # prefill graph. Update state for persistence, but run attention against
+        # a local updated cache tensor.
+        key_cache = self.kv_cache_0[key_idx:key_idx + 1].squeeze(0).clone()
+        value_cache = self.kv_cache_0[value_idx:value_idx + 1].squeeze(0).clone()
+        key_cache[:, pos:pos + seq_len, :] = key_states.squeeze(0)
+        value_cache[:, pos:pos + seq_len, :] = value_states.squeeze(0)
+        self.kv_cache_0[key_idx:key_idx + 1] = key_cache.unsqueeze(0)
+        self.kv_cache_0[value_idx:value_idx + 1] = value_cache.unsqueeze(0)
 
-        key_cache = self.kv_cache_0[key_idx:key_idx + 1].squeeze(0)
-        value_cache = self.kv_cache_0[value_idx:value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_prefill(
             hidden_states=x,
             query_states=query_states,
@@ -1793,6 +1798,10 @@ class Qwen35Model(nn.Module):
             if linear_conv_state is None or linear_recurrent_state is None:
                 raise ValueError("Linear-attention export requires local linear state tensors")
             x = layer.input_layernorm(hidden_states)
+            if expected_batch_size is not None:
+                layer.self_attn.export_expected_batch_size = int(expected_batch_size)
+            if expected_seq_len is not None:
+                layer.self_attn.export_expected_seq_len = int(expected_seq_len)
             conv_state = linear_conv_state[local_layer_idx : local_layer_idx + 1]
             recurrent_state = linear_recurrent_state[local_layer_idx : local_layer_idx + 1]
             attn_out, next_conv, next_rec = layer.self_attn.forward_prefill_export(
@@ -1818,19 +1827,23 @@ class Qwen35Model(nn.Module):
             q_len=seq_len, current_pos=pos, dtype=MODEL_DTYPE, device=hidden_states.device
         )
         if k_cache is not None and v_cache is not None:
-            k_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + seq_len, :] = key_states
-            v_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + seq_len, :] = value_states
-            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
-            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
+            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
+            key_cache[:, pos:pos + seq_len, :] = key_states.squeeze(0)
+            value_cache[:, pos:pos + seq_len, :] = value_states.squeeze(0)
+            k_cache[local_layer_idx : local_layer_idx + 1] = key_cache.unsqueeze(0)
+            v_cache[local_layer_idx : local_layer_idx + 1] = value_cache.unsqueeze(0)
         else:
             if kv_cache_0 is None:
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx:key_idx + 1, :, pos:pos + seq_len, :] = key_states
-            kv_cache_0[value_idx:value_idx + 1, :, pos:pos + seq_len, :] = value_states
-            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0)
-            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0).clone()
+            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0).clone()
+            key_cache[:, pos:pos + seq_len, :] = key_states.squeeze(0)
+            value_cache[:, pos:pos + seq_len, :] = value_states.squeeze(0)
+            kv_cache_0[key_idx:key_idx + 1] = key_cache.unsqueeze(0)
+            kv_cache_0[value_idx:value_idx + 1] = value_cache.unsqueeze(0)
         attn_out = layer.self_attn.forward_prefill(
             hidden_states=x,
             query_states=query_states,

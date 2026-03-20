@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -15,21 +16,21 @@ from transformers import AutoTokenizer
 from anemll.models.qwen3_5_model import MODEL_DTYPE, Qwen35Config, Qwen35ForCausalLM
 
 
-def _resolve_model_path(path: Path) -> Path:
+def _resolve_model_path(path: Path, prefer_compiled: bool = True) -> Path:
     if path.exists():
         compiled = path.with_suffix(".mlmodelc")
-        if path.suffix == ".mlpackage" and compiled.exists():
+        if prefer_compiled and path.suffix == ".mlpackage" and compiled.exists():
             return compiled
         return path
-    if path.suffix == ".mlpackage":
+    if prefer_compiled and path.suffix == ".mlpackage":
         compiled = path.with_suffix(".mlmodelc")
         if compiled.exists():
             return compiled
     raise FileNotFoundError(path)
 
 
-def _load_model(path: Path, compute_unit):
-    resolved = _resolve_model_path(path)
+def _load_model(path: Path, compute_unit, *, prefer_compiled: bool = True):
+    resolved = _resolve_model_path(path, prefer_compiled=prefer_compiled)
     if resolved.suffix == ".mlmodelc":
         return ct.models.CompiledMLModel(str(resolved), compute_unit)
     return ct.models.MLModel(str(resolved), compute_units=compute_unit)
@@ -167,13 +168,25 @@ def main() -> None:
 
     with torch.no_grad():
         torch_final = torch_model.model.norm(torch_chunk_hidden[-1].clone())
-        torch_logits = torch_model.lm_head(torch_final[:, -1:, :].transpose(1, 2)).transpose(1, 2)
+        torch_logits = (
+            torch_model.lm_head(torch_final[:, -1:, :].permute(0, 2, 1).unsqueeze(2))
+            .squeeze(2)
+            .permute(0, 2, 1)
+        )
         torch_top = int(torch.argmax(torch_logits[0, -1, :]).item())
+
+    # Keep only the reference chunk outputs / logits we need for comparison.
+    del torch_model, cfg, local_states, torch_hidden, torch_final, torch_logits
+    gc.collect()
 
     embed_model = _load_model(export_dir / f"{args.prefix}_embeddings.mlpackage", compute_unit)
     print("coreml_embed_loaded")
     chunk_models = [
-        _load_model(export_dir / f"{args.prefix}_prefill_chunk_{idx:02d}of{args.num_chunks:02d}.mlpackage", compute_unit)
+        _load_model(
+            export_dir / f"{args.prefix}_prefill_chunk_{idx:02d}of{args.num_chunks:02d}.mlpackage",
+            compute_unit,
+            prefer_compiled=True,
+        )
         for idx in range(1, args.num_chunks + 1)
     ]
     print("coreml_prefill_chunks_loaded")
