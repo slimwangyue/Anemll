@@ -225,7 +225,9 @@ class Qwen35RMSNormGated(nn.Module):
 
 
 def _l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
-    return x * torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
+    sq_sum = (x * x).sum(dim=dim, keepdim=True)
+    sq_sum = torch.clamp(sq_sum, min=eps)
+    return x * torch.rsqrt(sq_sum)
 
 
 class Qwen35RotaryEmbedding(nn.Module):
@@ -537,6 +539,223 @@ class Qwen35FullAttention(nn.Module):
         return self._project_output(attn_output, hidden_states, gate=gate)
 
 
+class Qwen35LinearProjStage(nn.Module):
+    """Projection stage for Qwen3.5 linear attention."""
+
+    def __init__(
+        self,
+        in_proj_qkv: nn.Conv2d,
+        in_proj_z: nn.Conv2d,
+        in_proj_b: nn.Conv2d,
+        in_proj_a: nn.Conv2d,
+    ) -> None:
+        super().__init__()
+        self.in_proj_qkv = in_proj_qkv
+        self.in_proj_z = in_proj_z
+        self.in_proj_b = in_proj_b
+        self.in_proj_a = in_proj_a
+
+    @staticmethod
+    def to_channels_first_4d(x_bsh: torch.Tensor) -> torch.Tensor:
+        return x_bsh.transpose(1, 2).unsqueeze(2)
+
+    @staticmethod
+    def from_channels_first_4d(x_bc1s: torch.Tensor) -> torch.Tensor:
+        return x_bc1s.squeeze(2).transpose(1, 2)
+
+    @staticmethod
+    def conv2d_proj_cf(conv: nn.Conv2d, x_bc1s: torch.Tensor) -> torch.Tensor:
+        return conv(x_bc1s.to(MODEL_DTYPE))
+
+    def forward(
+        self, hidden_states: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden_cf = self.to_channels_first_4d(hidden_states)
+        mixed_qkv_pre = self.conv2d_proj_cf(self.in_proj_qkv, hidden_cf)
+        z_cf = self.conv2d_proj_cf(self.in_proj_z, hidden_cf)
+        b_cf = self.conv2d_proj_cf(self.in_proj_b, hidden_cf)
+        a_cf = self.conv2d_proj_cf(self.in_proj_a, hidden_cf)
+        return mixed_qkv_pre, z_cf, b_cf, a_cf
+
+
+class Qwen35LinearConvStage(nn.Module):
+    """Depthwise causal convolution stage for Qwen3.5 linear attention."""
+
+    def __init__(self, conv2d: nn.Conv2d, linear_conv_kernel_dim: int) -> None:
+        super().__init__()
+        self.conv2d = conv2d
+        self.linear_conv_kernel_dim = linear_conv_kernel_dim
+
+    def forward(
+        self,
+        mixed_qkv_bc1s: torch.Tensor,
+        conv_state: torch.Tensor,
+        expected_seq_len: int | None = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        k = self.linear_conv_kernel_dim
+        seq_len = expected_seq_len if expected_seq_len is not None else mixed_qkv_bc1s.shape[-1]
+        stacked = torch.cat([conv_state.to(mixed_qkv_bc1s.dtype).unsqueeze(2), mixed_qkv_bc1s], dim=-1)
+        out = self.conv2d(stacked.to(self.conv2d.weight.dtype))
+        out = F.silu(out[:, :, :, -seq_len:])
+        next_state = stacked[:, :, :, -k:].squeeze(2)
+        return out.to(mixed_qkv_bc1s.dtype), next_state.to(mixed_qkv_bc1s.dtype)
+
+
+class Qwen35LinearLayoutStage(nn.Module):
+    """Layout/materialization stage for Qwen3.5 linear attention."""
+
+    def __init__(
+        self,
+        num_k_heads: int,
+        num_v_heads: int,
+        head_k_dim: int,
+        head_v_dim: int,
+        key_dim: int,
+        value_dim: int,
+        A_log: nn.Parameter,
+        dt_bias: nn.Parameter,
+    ) -> None:
+        super().__init__()
+        self.num_k_heads = num_k_heads
+        self.num_v_heads = num_v_heads
+        self.head_k_dim = head_k_dim
+        self.head_v_dim = head_v_dim
+        self.key_dim = key_dim
+        self.value_dim = value_dim
+        self.A_log = A_log
+        self.dt_bias = dt_bias
+
+    @staticmethod
+    def from_channels_first_4d(x_bc1s: torch.Tensor) -> torch.Tensor:
+        return x_bc1s.squeeze(2).transpose(1, 2)
+
+    def forward(
+        self,
+        conv_out_cf: torch.Tensor,
+        z_cf: torch.Tensor,
+        b_cf: torch.Tensor,
+        a_cf: torch.Tensor,
+        bsz: int,
+        seq_len: int,
+        force_fp16_math: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        query_cf, key_cf, value_cf = torch.split(
+            conv_out_cf, [self.key_dim, self.key_dim, self.value_dim], dim=1
+        )
+        query = self.from_channels_first_4d(query_cf).reshape(bsz, seq_len, self.num_k_heads, self.head_k_dim)
+        key = self.from_channels_first_4d(key_cf).reshape(bsz, seq_len, self.num_k_heads, self.head_k_dim)
+        value = self.from_channels_first_4d(value_cf).reshape(
+            bsz, seq_len, self.num_v_heads, self.head_v_dim
+        )
+
+        z = self.from_channels_first_4d(z_cf).reshape(
+            bsz, seq_len, self.num_v_heads, self.head_v_dim
+        )
+        b = self.from_channels_first_4d(b_cf)
+        a = self.from_channels_first_4d(a_cf)
+        beta = b.sigmoid()
+        if force_fp16_math:
+            g = -self.A_log.to(MODEL_DTYPE).exp() * F.softplus(a.to(MODEL_DTYPE) + self.dt_bias)
+        else:
+            g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+        if self.num_v_heads // self.num_k_heads > 1:
+            rep = self.num_v_heads // self.num_k_heads
+            query = query.repeat_interleave(rep, dim=2)
+            key = key.repeat_interleave(rep, dim=2)
+        return query, key, value, g, beta, z
+
+
+class Qwen35LinearCoreNormStage(nn.Module):
+    """Core recurrence + gated norm + output projection stage."""
+
+    def __init__(
+        self,
+        num_v_heads: int,
+        head_k_dim: int,
+        head_v_dim: int,
+        value_dim: int,
+        hidden_size: int,
+        norm: Qwen35RMSNormGated,
+        out_proj: nn.Conv2d,
+    ) -> None:
+        super().__init__()
+        self.num_v_heads = num_v_heads
+        self.head_k_dim = head_k_dim
+        self.head_v_dim = head_v_dim
+        self.value_dim = value_dim
+        self.hidden_size = hidden_size
+        self.norm = norm
+        self.out_proj = out_proj
+
+    @staticmethod
+    def to_channels_first_4d(x_bsh: torch.Tensor) -> torch.Tensor:
+        return x_bsh.transpose(1, 2).unsqueeze(2)
+
+    @staticmethod
+    def from_channels_first_4d(x_bc1s: torch.Tensor) -> torch.Tensor:
+        return x_bc1s.squeeze(2).transpose(1, 2)
+
+    @staticmethod
+    def conv2d_proj_cf(conv: nn.Conv2d, x_bc1s: torch.Tensor) -> torch.Tensor:
+        return conv(x_bc1s.to(MODEL_DTYPE))
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        g: torch.Tensor,
+        beta: torch.Tensor,
+        z: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        has_previous_state: bool,
+        bsz: int,
+        seq_len: int,
+        force_recurrent: bool = False,
+        force_fp16_math: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if force_recurrent or (has_previous_state and seq_len == 1):
+            core, next_recurrent_state = Qwen35LinearAttention._recurrent_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                recurrent_state=recurrent_state,
+                output_final_state=True,
+                expected_batch_size=bsz,
+                expected_num_heads=self.num_v_heads,
+                expected_seq_len=seq_len,
+                expected_k_dim=self.head_k_dim,
+                expected_v_dim=self.head_v_dim,
+                math_dtype=MODEL_DTYPE if force_fp16_math else torch.float32,
+            )
+        else:
+            core, next_recurrent_state = Qwen35LinearAttention._chunk_gated_delta_rule(
+                query,
+                key,
+                value,
+                g=g,
+                beta=beta,
+                initial_state=recurrent_state if has_previous_state else None,
+                output_final_state=True,
+                expected_batch_size=bsz,
+                expected_num_heads=self.num_v_heads,
+                expected_seq_len=seq_len,
+                expected_k_dim=self.head_k_dim,
+                expected_v_dim=self.head_v_dim,
+                math_dtype=MODEL_DTYPE if force_fp16_math else torch.float32,
+            )
+
+        core = self.norm(core.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim)).reshape(
+            bsz, seq_len, self.value_dim
+        )
+        out = self.from_channels_first_4d(
+            self.conv2d_proj_cf(self.out_proj, self.to_channels_first_4d(core))
+        )
+        return out, next_recurrent_state
+
+
 class Qwen35LinearAttention(nn.Module):
     """Qwen3.5 linear attention (gated delta net) with fixed-shape cache contract."""
 
@@ -573,25 +792,120 @@ class Qwen35LinearAttention(nn.Module):
         self.A_log = nn.Parameter(torch.zeros(self.num_v_heads, dtype=torch.float32, device=TEST_DEVICE))
         self.dt_bias = nn.Parameter(torch.zeros(self.num_v_heads, dtype=MODEL_DTYPE, device=TEST_DEVICE))
         self.norm = Qwen35RMSNormGated(self.head_v_dim, eps=config.rms_norm_eps)
+        self.proj_stage = Qwen35LinearProjStage(
+            self.in_proj_qkv, self.in_proj_z, self.in_proj_b, self.in_proj_a
+        )
+        self.conv_stage = Qwen35LinearConvStage(self.conv2d, self.linear_conv_kernel_dim)
+        self.layout_stage = Qwen35LinearLayoutStage(
+            self.num_k_heads,
+            self.num_v_heads,
+            self.head_k_dim,
+            self.head_v_dim,
+            self.key_dim,
+            self.value_dim,
+            self.A_log,
+            self.dt_bias,
+        )
+        self.core_norm_stage = Qwen35LinearCoreNormStage(
+            self.num_v_heads,
+            self.head_k_dim,
+            self.head_v_dim,
+            self.value_dim,
+            self.hidden_size,
+            self.norm,
+            self.out_proj,
+        )
+        self.export_expected_batch_size = 1
+        self.export_expected_seq_len = 1
 
     @staticmethod
-    def _conv2d_proj(conv: nn.Conv2d, x_bsh: torch.Tensor) -> torch.Tensor:
-        y = conv(x_bsh.permute(0, 2, 1).unsqueeze(2).to(MODEL_DTYPE))
-        return y.squeeze(2).transpose(1, 2)
+    def _to_channels_first_4d(x_bsh: torch.Tensor) -> torch.Tensor:
+        return x_bsh.transpose(1, 2).unsqueeze(2)
+
+    @staticmethod
+    def _from_channels_first_4d(x_bc1s: torch.Tensor) -> torch.Tensor:
+        return x_bc1s.squeeze(2).transpose(1, 2)
+
+    @classmethod
+    def _conv2d_proj_cf(cls, conv: nn.Conv2d, x_bc1s: torch.Tensor) -> torch.Tensor:
+        return conv(x_bc1s.to(MODEL_DTYPE))
+
+    @classmethod
+    def _conv2d_proj(cls, conv: nn.Conv2d, x_bsh: torch.Tensor) -> torch.Tensor:
+        return cls._from_channels_first_4d(cls._conv2d_proj_cf(conv, cls._to_channels_first_4d(x_bsh)))
+
+    def _causal_conv_update_cf(
+        self,
+        mixed_qkv_bc1s: torch.Tensor,
+        conv_state: torch.Tensor,
+        expected_seq_len: int | None = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        k = self.linear_conv_kernel_dim
+        seq_len = expected_seq_len if expected_seq_len is not None else mixed_qkv_bc1s.shape[-1]
+        stacked = torch.cat([conv_state.to(mixed_qkv_bc1s.dtype).unsqueeze(2), mixed_qkv_bc1s], dim=-1)
+        out = self.conv2d(stacked.to(self.conv2d.weight.dtype))
+        out = F.silu(out[:, :, :, -seq_len:])
+        next_state = stacked[:, :, :, -k:].squeeze(2)
+        return out.to(mixed_qkv_bc1s.dtype), next_state.to(mixed_qkv_bc1s.dtype)
+
+    def debug_token_mixer_layout(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor | None = None,
+        expected_seq_len: int | None = None,
+    ) -> List[Tuple[str, Tuple[int, ...]]]:
+        seq_len = int(expected_seq_len) if expected_seq_len is not None else hidden_states.shape[1]
+        bsz = hidden_states.shape[0]
+        if conv_state is None:
+            conv_state = torch.zeros(
+                (bsz, self.conv_dim, self.linear_conv_kernel_dim),
+                dtype=MODEL_DTYPE,
+                device=hidden_states.device,
+            )
+        mixed_qkv_pre, z_cf, b_cf, a_cf = self.proj_stage(hidden_states)
+        conv_out_cf, next_conv_state = self.conv_stage(mixed_qkv_pre, conv_state, expected_seq_len=seq_len)
+        query_cf, key_cf, value_cf = torch.split(
+            conv_out_cf, [self.key_dim, self.key_dim, self.value_dim], dim=1
+        )
+        core_cf = self._to_channels_first_4d(
+            torch.zeros(bsz, seq_len, self.value_dim, dtype=hidden_states.dtype)
+        )
+        out_cf = self._conv2d_proj_cf(self.out_proj, core_cf)
+        return [
+            ("hidden_bsh", tuple(hidden_states.shape)),
+            ("hidden_bc1s", tuple(self._to_channels_first_4d(hidden_states).shape)),
+            ("mixed_qkv_pre_bc1s", tuple(mixed_qkv_pre.shape)),
+            ("z_bc1s", tuple(z_cf.shape)),
+            ("b_bc1s", tuple(b_cf.shape)),
+            ("a_bc1s", tuple(a_cf.shape)),
+            ("conv_state_bck", tuple(conv_state.shape)),
+            ("conv_out_bc1s", tuple(conv_out_cf.shape)),
+            ("next_conv_state_bck", tuple(next_conv_state.shape)),
+            ("query_cf", tuple(query_cf.shape)),
+            ("key_cf", tuple(key_cf.shape)),
+            ("value_cf", tuple(value_cf.shape)),
+            ("core_cf", tuple(core_cf.shape)),
+            ("out_cf", tuple(out_cf.shape)),
+            ("out_bsh", tuple(self._from_channels_first_4d(out_cf).shape)),
+        ]
+
+    def print_token_mixer_layout(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor | None = None,
+        expected_seq_len: int | None = None,
+    ) -> None:
+        for name, shape in self.debug_token_mixer_layout(hidden_states, conv_state, expected_seq_len):
+            print(f"{name:24s} {shape}")
 
     def _causal_conv_update(
-        self, mixed_qkv_t: torch.Tensor, conv_state: torch.Tensor
+        self,
+        mixed_qkv_t: torch.Tensor,
+        conv_state: torch.Tensor,
+        expected_seq_len: int | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # mixed_qkv_t: [B, conv_dim, seq_len], conv_state: [B, conv_dim, K]
-        k = self.linear_conv_kernel_dim
-        seq_len = mixed_qkv_t.shape[-1]
-        stacked = torch.cat([conv_state.to(mixed_qkv_t.dtype), mixed_qkv_t], dim=-1)
-        stacked4 = stacked.unsqueeze(2)  # [B, C, 1, K + seq_len]
-        # Use static temporal slicing: keep only the last `seq_len` outputs.
-        out4 = self.conv2d(stacked4).squeeze(2)
-        out = F.silu(out4[:, :, -seq_len:])
-        next_state = stacked[:, :, -k:]
-        return out.to(mixed_qkv_t.dtype), next_state.to(mixed_qkv_t.dtype)
+        out_cf, next_state = self._causal_conv_update_cf(mixed_qkv_t.unsqueeze(2), conv_state, expected_seq_len)
+        return out_cf.squeeze(2), next_state
 
     @staticmethod
     def _chunk_gated_delta_rule(
@@ -603,17 +917,27 @@ class Qwen35LinearAttention(nn.Module):
         chunk_size: int = 64,
         initial_state: torch.Tensor | None = None,
         output_final_state: bool = True,
+        expected_batch_size: int | None = None,
+        expected_num_heads: int | None = None,
+        expected_seq_len: int | None = None,
+        expected_k_dim: int | None = None,
+        expected_v_dim: int | None = None,
+        math_dtype: torch.dtype = torch.float32,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         # Mirror HF torch fallback as closely as possible for parity bring-up.
         initial_dtype = query.dtype
+        query, key, value, beta, g = [
+            x.transpose(1, 2).contiguous().to(math_dtype) for x in (query, key, value, beta, g)
+        ]
         query = _l2norm(query, dim=-1)
         key = _l2norm(key, dim=-1)
-        query, key, value, beta, g = [
-            x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
-        ]
 
-        batch_size, num_heads, seq_len, k_dim = key.shape
-        v_dim = value.shape[-1]
+        batch_size = expected_batch_size if expected_batch_size is not None else key.shape[0]
+        num_heads = expected_num_heads if expected_num_heads is not None else key.shape[1]
+        seq_len = expected_seq_len if expected_seq_len is not None else key.shape[2]
+        k_dim = expected_k_dim if expected_k_dim is not None else key.shape[-1]
+        v_dim = expected_v_dim if expected_v_dim is not None else value.shape[-1]
+        chunk_size = min(chunk_size, seq_len)
         pad_size = (chunk_size - seq_len % chunk_size) % chunk_size
         query = F.pad(query, (0, 0, 0, pad_size))
         key = F.pad(key, (0, 0, 0, pad_size))
@@ -621,24 +945,31 @@ class Qwen35LinearAttention(nn.Module):
         beta = F.pad(beta, (0, pad_size))
         g = F.pad(g, (0, pad_size))
         total_sequence_length = seq_len + pad_size
-        scale = 1 / (query.shape[-1] ** 0.5)
+        scale = 1 / (k_dim ** 0.5)
         query = query * scale
 
         v_beta = value * beta.unsqueeze(-1)
         k_beta = key * beta.unsqueeze(-1)
+        n_chunks = total_sequence_length // chunk_size
         query, key, value, k_beta, v_beta = [
-            x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, value, k_beta, v_beta)
+            x.reshape(batch_size, num_heads, n_chunks, chunk_size, k_dim if idx != 2 and idx != 4 else v_dim)
+            for idx, x in enumerate((query, key, value, k_beta, v_beta))
         ]
-        g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
+        g = g.reshape(batch_size, num_heads, n_chunks, chunk_size)
         mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
 
         g = g.cumsum(dim=-1)
         decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
         attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask, 0)
+        attn_rows = [attn[..., 0:1, :]]
         for i in range(1, chunk_size):
             row = attn[..., i, :i].clone()
-            sub = attn[..., :i, :i].clone()
-            attn[..., i, :i] = row + (row.unsqueeze(-1) * sub).sum(-2)
+            sub = torch.cat([prev_row[..., :i] for prev_row in attn_rows[:i]], dim=-2)
+            updated_row = row + (row.unsqueeze(-1) * sub).sum(-2)
+            tail = attn[..., i : i + 1, i:]
+            full_row = torch.cat([updated_row.unsqueeze(-2), tail], dim=-1)
+            attn_rows.append(full_row)
+        attn = torch.cat(attn_rows, dim=-2)
         attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
         value = attn @ v_beta
         k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
@@ -647,16 +978,16 @@ class Qwen35LinearAttention(nn.Module):
             if initial_state is None
             else initial_state.to(value)
         )
-        core_attn_out = torch.zeros_like(value)
         mask = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=1)
+        core_attn_chunks = []
 
         for i in range(0, total_sequence_length // chunk_size):
             q_i, k_i, v_i = query[:, :, i], key[:, :, i], value[:, :, i]
-            attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]).masked_fill_(mask, 0)
+            attn = (q_i @ k_i.transpose(-1, -2) * decay_mask[:, :, i]).masked_fill(mask, 0)
             v_prime = k_cumdecay[:, :, i] @ last_recurrent_state
             v_new = v_i - v_prime
             attn_inter = (q_i * g[:, :, i, :, None].exp()) @ last_recurrent_state
-            core_attn_out[:, :, i] = attn_inter + attn @ v_new
+            core_attn_chunks.append((attn_inter + attn @ v_new).unsqueeze(2))
             last_recurrent_state = (
                 last_recurrent_state * g[:, :, i, -1, None, None].exp()
                 + (k_i * (g[:, :, i, -1, None] - g[:, :, i]).exp()[..., None]).transpose(-1, -2) @ v_new
@@ -664,7 +995,8 @@ class Qwen35LinearAttention(nn.Module):
 
         if not output_final_state:
             last_recurrent_state = None
-        core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], core_attn_out.shape[1], -1, core_attn_out.shape[-1])
+        core_attn_out = torch.cat(core_attn_chunks, dim=2)
+        core_attn_out = core_attn_out.reshape(batch_size, num_heads, total_sequence_length, v_dim)
         core_attn_out = core_attn_out[:, :, :seq_len]
         core_attn_out = core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)
         return core_attn_out, last_recurrent_state
@@ -678,16 +1010,25 @@ class Qwen35LinearAttention(nn.Module):
         beta: torch.Tensor,
         recurrent_state: torch.Tensor,
         output_final_state: bool = True,
+        expected_batch_size: int | None = None,
+        expected_num_heads: int | None = None,
+        expected_seq_len: int | None = None,
+        expected_k_dim: int | None = None,
+        expected_v_dim: int | None = None,
+        math_dtype: torch.dtype = torch.float32,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         initial_dtype = query.dtype
+        query, key, value, beta, g = [
+            x.transpose(1, 2).contiguous().to(math_dtype) for x in (query, key, value, beta, g)
+        ]
         query = _l2norm(query, dim=-1)
         key = _l2norm(key, dim=-1)
-        query, key, value, beta, g = [
-            x.transpose(1, 2).contiguous().to(torch.float32) for x in (query, key, value, beta, g)
-        ]
-        bsz, n_heads, seq_len, _ = key.shape
-        v_dim = value.shape[-1]
-        scale = 1 / (query.shape[-1] ** 0.5)
+        bsz = expected_batch_size if expected_batch_size is not None else key.shape[0]
+        n_heads = expected_num_heads if expected_num_heads is not None else key.shape[1]
+        seq_len = expected_seq_len if expected_seq_len is not None else key.shape[2]
+        k_dim = expected_k_dim if expected_k_dim is not None else key.shape[-1]
+        v_dim = expected_v_dim if expected_v_dim is not None else value.shape[-1]
+        scale = 1 / (k_dim ** 0.5)
         query = query * scale
 
         out = torch.zeros(bsz, n_heads, seq_len, v_dim, dtype=value.dtype, device=value.device)
@@ -714,12 +1055,14 @@ class Qwen35LinearAttention(nn.Module):
         conv_state: torch.Tensor | None,
         recurrent_state: torch.Tensor | None,
         has_previous_state: bool,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+        force_recurrent: bool = False,
+        force_fp16_math: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        bsz, seq_len, _ = hidden_states.shape
-        mixed_qkv = self._conv2d_proj(self.in_proj_qkv, hidden_states).transpose(1, 2)
-        z = self._conv2d_proj(self.in_proj_z, hidden_states).reshape(bsz, seq_len, self.num_v_heads, self.head_v_dim)
-        b = self._conv2d_proj(self.in_proj_b, hidden_states)
-        a = self._conv2d_proj(self.in_proj_a, hidden_states)
+        bsz = expected_batch_size if expected_batch_size is not None else hidden_states.shape[0]
+        seq_len = expected_seq_len if expected_seq_len is not None else hidden_states.shape[1]
+        mixed_qkv_pre, z_cf, b_cf, a_cf = self.proj_stage(hidden_states)
 
         if conv_state is None:
             conv_state = torch.zeros(
@@ -727,20 +1070,18 @@ class Qwen35LinearAttention(nn.Module):
                 dtype=MODEL_DTYPE,
                 device=hidden_states.device,
             )
-        conv_out, next_conv_state = self._causal_conv_update(mixed_qkv, conv_state)
-        mixed_qkv = conv_out.transpose(1, 2)
-
-        query, key, value = torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)
-        query = query.reshape(bsz, seq_len, self.num_k_heads, self.head_k_dim)
-        key = key.reshape(bsz, seq_len, self.num_k_heads, self.head_k_dim)
-        value = value.reshape(bsz, seq_len, self.num_v_heads, self.head_v_dim)
-
-        beta = b.sigmoid()
-        g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
-        if self.num_v_heads // self.num_k_heads > 1:
-            rep = self.num_v_heads // self.num_k_heads
-            query = query.repeat_interleave(rep, dim=2)
-            key = key.repeat_interleave(rep, dim=2)
+        conv_out_cf, next_conv_state = self.conv_stage(
+            mixed_qkv_pre, conv_state, expected_seq_len=expected_seq_len
+        )
+        query, key, value, g, beta, z = self.layout_stage(
+            conv_out_cf,
+            z_cf,
+            b_cf,
+            a_cf,
+            bsz,
+            seq_len,
+            force_fp16_math=force_fp16_math,
+        )
 
         if recurrent_state is None:
             recurrent_state = torch.zeros(
@@ -749,19 +1090,65 @@ class Qwen35LinearAttention(nn.Module):
                 device=hidden_states.device,
             )
 
-        if has_previous_state and seq_len == 1:
-            core, next_recurrent_state = self._recurrent_gated_delta_rule(
-                query, key, value, g=g, beta=beta, recurrent_state=recurrent_state, output_final_state=True
-            )
-        else:
-            core, next_recurrent_state = self._chunk_gated_delta_rule(
-                query, key, value, g=g, beta=beta, initial_state=None, output_final_state=True
-            )
+        out, next_recurrent_state = self.core_norm_stage(
+            query=query,
+            key=key,
+            value=value,
+            g=g,
+            beta=beta,
+            z=z,
+            recurrent_state=recurrent_state,
+            has_previous_state=has_previous_state,
+            bsz=bsz,
+            seq_len=seq_len,
+            force_recurrent=force_recurrent,
+            force_fp16_math=force_fp16_math,
+        )
+        return out, next_conv_state, next_recurrent_state
 
-        core = core.reshape(-1, self.head_v_dim)
-        zf = z.reshape(-1, self.head_v_dim)
-        core = self.norm(core, zf).reshape(bsz, seq_len, self.value_dim)
-        out = self.out_proj(core.permute(0, 2, 1).unsqueeze(2)).squeeze(2).transpose(1, 2)
+    def _forward_prefill_export_impl(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        has_previous_state: bool = True,
+        force_fp16_math: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Fixed-contract prefill path for CoreML export.
+
+        This avoids tracing the generic runtime control flow in `_forward_impl`
+        so CoreML does not see Python-side `seq_len == 1` or `min(chunk_size, seq_len)`
+        decisions for the prefill graph.
+        """
+        bsz = self.export_expected_batch_size
+        seq_len = self.export_expected_seq_len
+        mixed_qkv_pre, z_cf, b_cf, a_cf = self.proj_stage(hidden_states)
+        conv_out_cf, next_conv_state = self.conv_stage(
+            mixed_qkv_pre, conv_state, expected_seq_len=seq_len
+        )
+        query, key, value, g, beta, z = self.layout_stage(
+            conv_out_cf,
+            z_cf,
+            b_cf,
+            a_cf,
+            bsz,
+            seq_len,
+            force_fp16_math=force_fp16_math,
+        )
+        out, next_recurrent_state = self.core_norm_stage(
+            query=query,
+            key=key,
+            value=value,
+            g=g,
+            beta=beta,
+            z=z,
+            recurrent_state=recurrent_state,
+            has_previous_state=has_previous_state,
+            bsz=bsz,
+            seq_len=seq_len,
+            force_recurrent=False,
+            force_fp16_math=force_fp16_math,
+        )
         return out, next_conv_state, next_recurrent_state
 
     def get_new_kv_cache(
@@ -812,12 +1199,20 @@ class Qwen35LinearAttention(nn.Module):
         recurrent_state: torch.Tensor,
         has_previous_state: bool = True,
         causal_mask: torch.Tensor | None = None,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+        force_recurrent: bool = False,
+        force_fp16_math: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._forward_impl(
             hidden_states=hidden_states,
             conv_state=conv_state,
             recurrent_state=recurrent_state,
             has_previous_state=has_previous_state,
+            expected_batch_size=expected_batch_size,
+            expected_seq_len=expected_seq_len,
+            force_recurrent=force_recurrent,
+            force_fp16_math=force_fp16_math,
         )
 
     def forward_prefill(
@@ -827,12 +1222,36 @@ class Qwen35LinearAttention(nn.Module):
         recurrent_state: torch.Tensor,
         has_previous_state: bool = False,
         causal_mask: torch.Tensor | None = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+        force_recurrent: bool = False,
+        force_fp16_math: bool = False,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._forward_impl(
             hidden_states=hidden_states,
             conv_state=conv_state,
             recurrent_state=recurrent_state,
             has_previous_state=has_previous_state,
+            expected_batch_size=expected_batch_size,
+            expected_seq_len=expected_seq_len,
+            force_recurrent=force_recurrent,
+            force_fp16_math=force_fp16_math,
+        )
+
+    def forward_prefill_export(
+        self,
+        hidden_states: torch.Tensor,
+        conv_state: torch.Tensor,
+        recurrent_state: torch.Tensor,
+        has_previous_state: bool = True,
+        force_fp16_math: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        return self._forward_prefill_export_impl(
+            hidden_states=hidden_states,
+            conv_state=conv_state,
+            recurrent_state=recurrent_state,
+            has_previous_state=has_previous_state,
+            force_fp16_math=force_fp16_math,
         )
 
     def forward(
@@ -918,7 +1337,7 @@ class Qwen35Model(nn.Module):
                         config.text_config.linear_key_head_dim,
                         config.text_config.linear_value_head_dim,
                     ),
-                    dtype=torch.float32,
+                    dtype=MODEL_DTYPE,
                     device=TEST_DEVICE,
                 ),
             )
@@ -1076,6 +1495,427 @@ class Qwen35Model(nn.Module):
         post = layer.post_attention_layernorm(hidden_states)
         return hidden_states + layer.mlp(post)
 
+    def _process_layer_regular_single_token_export(
+        self,
+        layer_idx: int,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+    ) -> torch.Tensor:
+        """Teacher-faithful export path for single-token generation.
+
+        This intentionally avoids the mixed regular/prefill control flow that
+        exists in the generic runtime path so chunked FFN export traces only the
+        decode contract used by part-2 generation models.
+        """
+        layer = self.layers[layer_idx]
+        if layer.layer_type == "linear_attention":
+            x = layer.input_layernorm(hidden_states)
+            conv_state = self.linear_conv_state[layer_idx : layer_idx + 1]
+            recurrent_state = self.linear_recurrent_state[layer_idx : layer_idx + 1]
+            attn_out, next_conv, next_rec = layer.self_attn.forward_regular(
+                hidden_states=x,
+                conv_state=conv_state,
+                recurrent_state=recurrent_state,
+                # Export path relies on zero-initialized state rather than an
+                # in-graph reset branch for the first token.
+                has_previous_state=True,
+                causal_mask=causal_mask,
+                expected_batch_size=1,
+                expected_seq_len=1,
+                force_recurrent=True,
+            )
+            self.linear_conv_state[layer_idx : layer_idx + 1] = next_conv
+            self.linear_recurrent_state[layer_idx : layer_idx + 1] = next_rec.to(self.linear_recurrent_state.dtype)
+            hidden_states = hidden_states + attn_out
+            post = layer.post_attention_layernorm(hidden_states)
+            return hidden_states + layer.mlp(post)
+
+        x = layer.input_layernorm(hidden_states)
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
+        key_idx = layer_idx
+        value_idx = layer_idx + self.config.num_hidden_layers
+        pos = current_pos
+
+        self.kv_cache_0[key_idx:key_idx + 1, :, pos:pos + 1, :] = key_states
+        self.kv_cache_0[value_idx:value_idx + 1, :, pos:pos + 1, :] = value_states
+
+        key_cache = self.kv_cache_0[key_idx:key_idx + 1].squeeze(0)
+        value_cache = self.kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+        attn_out = layer.self_attn.forward_regular(
+            hidden_states=x,
+            query_states=query_states,
+            kv_cache_layer=(key_cache, value_cache),
+            causal_mask=causal_mask,
+            gate=gate,
+        )
+        hidden_states = hidden_states + attn_out
+        post = layer.post_attention_layernorm(hidden_states)
+        return hidden_states + layer.mlp(post)
+
+    def process_layers_regular_single_token_export(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        start_layer: int = 0,
+        end_layer: int | None = None,
+        apply_final_norm: bool = False,
+    ) -> torch.Tensor:
+        if end_layer is None:
+            end_layer = len(self.layers)
+        for layer_idx in range(start_layer, end_layer):
+            hidden_states = self._process_layer_regular_single_token_export(
+                layer_idx, hidden_states, position_ids, causal_mask, current_pos
+            )
+        if apply_final_norm:
+            hidden_states = self.norm(hidden_states)
+        return hidden_states
+
+    def _process_layer_regular_single_token_export_local_state(
+        self,
+        layer_idx: int,
+        local_layer_idx: int,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        kv_cache_0: torch.Tensor | None,
+        k_cache: torch.Tensor | None,
+        v_cache: torch.Tensor | None,
+        linear_conv_state: torch.Tensor | None,
+        linear_recurrent_state: torch.Tensor | None,
+        local_num_layers: int,
+    ) -> torch.Tensor:
+        """Single-token export path using chunk-local state tensors."""
+        layer = self.layers[layer_idx]
+        if layer.layer_type == "linear_attention":
+            if linear_conv_state is None or linear_recurrent_state is None:
+                raise ValueError("Linear-attention export requires local linear state tensors")
+            x = layer.input_layernorm(hidden_states)
+            conv_state = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            recurrent_state = linear_recurrent_state[local_layer_idx : local_layer_idx + 1]
+            attn_out, next_conv, next_rec = layer.self_attn.forward_regular(
+                hidden_states=x,
+                conv_state=conv_state,
+                recurrent_state=recurrent_state,
+                has_previous_state=True,
+                causal_mask=causal_mask,
+                expected_batch_size=1,
+                expected_seq_len=1,
+                force_recurrent=True,
+            )
+            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv
+            linear_recurrent_state[local_layer_idx : local_layer_idx + 1] = next_rec.to(
+                linear_recurrent_state.dtype
+            )
+            hidden_states = hidden_states + attn_out
+            post = layer.post_attention_layernorm(hidden_states)
+            return hidden_states + layer.mlp(post)
+
+        x = layer.input_layernorm(hidden_states)
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
+        pos = current_pos
+        if k_cache is not None and v_cache is not None:
+            k_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + 1, :] = key_states
+            v_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + 1, :] = value_states
+            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+        else:
+            if kv_cache_0 is None:
+                raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
+            key_idx = local_layer_idx
+            value_idx = local_layer_idx + local_num_layers
+            kv_cache_0[key_idx:key_idx + 1, :, pos:pos + 1, :] = key_states
+            kv_cache_0[value_idx:value_idx + 1, :, pos:pos + 1, :] = value_states
+            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0)
+            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+        attn_out = layer.self_attn.forward_regular(
+            hidden_states=x,
+            query_states=query_states,
+            kv_cache_layer=(key_cache, value_cache),
+            causal_mask=causal_mask,
+            gate=gate,
+        )
+        hidden_states = hidden_states + attn_out
+        post = layer.post_attention_layernorm(hidden_states)
+        return hidden_states + layer.mlp(post)
+
+    def process_layers_regular_single_token_export_local_state(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        kv_cache_0: torch.Tensor | None,
+        k_cache: torch.Tensor | None = None,
+        v_cache: torch.Tensor | None = None,
+        linear_conv_state: torch.Tensor | None = None,
+        linear_recurrent_state: torch.Tensor | None = None,
+        start_layer: int = 0,
+        end_layer: int | None = None,
+        apply_final_norm: bool = False,
+    ) -> torch.Tensor:
+        if end_layer is None:
+            end_layer = len(self.layers)
+        local_num_layers = end_layer - start_layer
+        for local_layer_idx, layer_idx in enumerate(range(start_layer, end_layer)):
+            hidden_states = self._process_layer_regular_single_token_export_local_state(
+                layer_idx=layer_idx,
+                local_layer_idx=local_layer_idx,
+                hidden_states=hidden_states,
+                position_ids=position_ids,
+                causal_mask=causal_mask,
+                current_pos=current_pos,
+                kv_cache_0=kv_cache_0,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                linear_conv_state=linear_conv_state,
+                linear_recurrent_state=linear_recurrent_state,
+                local_num_layers=local_num_layers,
+            )
+        if apply_final_norm:
+            hidden_states = self.norm(hidden_states)
+        return hidden_states
+
+    def _process_layer_prefill_export(
+        self,
+        layer_idx: int,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+    ) -> torch.Tensor:
+        """Teacher-faithful export path for prefill.
+
+        Like the single-token export helper, this path relies on zero-initialized
+        external state for the first prefill call instead of tracing in-graph
+        `zero_()` resets, which CoreML cannot lower.
+        """
+        layer = self.layers[layer_idx]
+        if layer.layer_type == "linear_attention":
+            x = layer.input_layernorm(hidden_states)
+            conv_state = self.linear_conv_state[layer_idx : layer_idx + 1]
+            recurrent_state = self.linear_recurrent_state[layer_idx : layer_idx + 1]
+            attn_out, next_conv, next_rec = layer.self_attn.forward_prefill_export(
+                hidden_states=x,
+                conv_state=conv_state,
+                recurrent_state=recurrent_state,
+                # Export path relies on zero-initialized state rather than an
+                # in-graph reset branch for the first prefill token block.
+                has_previous_state=True,
+            )
+            self.linear_conv_state[layer_idx : layer_idx + 1] = next_conv
+            self.linear_recurrent_state[layer_idx : layer_idx + 1] = next_rec.to(self.linear_recurrent_state.dtype)
+            hidden_states = hidden_states + attn_out
+            post = layer.post_attention_layernorm(hidden_states)
+            return hidden_states + layer.mlp(post)
+
+        x = layer.input_layernorm(hidden_states)
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache_prefill(x, position_ids)
+
+        pos = current_pos
+        seq_len = expected_seq_len if expected_seq_len is not None else key_states.shape[2]
+        fixed_mask = self._build_fixed_cache_mask(
+            q_len=seq_len, current_pos=pos, dtype=MODEL_DTYPE, device=hidden_states.device
+        )
+        key_idx = layer_idx
+        value_idx = layer_idx + self.config.num_hidden_layers
+        self.kv_cache_0[key_idx:key_idx + 1, :, pos:pos + seq_len, :] = key_states
+        self.kv_cache_0[value_idx:value_idx + 1, :, pos:pos + seq_len, :] = value_states
+
+        key_cache = self.kv_cache_0[key_idx:key_idx + 1].squeeze(0)
+        value_cache = self.kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+        attn_out = layer.self_attn.forward_prefill(
+            hidden_states=x,
+            query_states=query_states,
+            kv_cache_layer=(key_cache, value_cache),
+            causal_mask=fixed_mask,
+            gate=gate,
+        )
+        hidden_states = hidden_states + attn_out
+        post = layer.post_attention_layernorm(hidden_states)
+        return hidden_states + layer.mlp(post)
+
+    def process_layers_prefill_export(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        start_layer: int = 0,
+        end_layer: int | None = None,
+        apply_final_norm: bool = False,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+    ) -> torch.Tensor:
+        """Teacher-faithful export path for prefill chunk models."""
+        if end_layer is None:
+            end_layer = len(self.layers)
+        for layer_idx in range(start_layer, end_layer):
+            hidden_states = self._process_layer_prefill_export(
+                layer_idx,
+                hidden_states,
+                position_ids,
+                causal_mask,
+                current_pos,
+                expected_batch_size=expected_batch_size,
+                expected_seq_len=expected_seq_len,
+            )
+        if apply_final_norm:
+            hidden_states = self.norm(hidden_states)
+        return hidden_states
+
+    def _process_layer_prefill_export_local_state(
+        self,
+        layer_idx: int,
+        local_layer_idx: int,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        kv_cache_0: torch.Tensor | None,
+        k_cache: torch.Tensor | None,
+        v_cache: torch.Tensor | None,
+        linear_conv_state: torch.Tensor | None,
+        linear_recurrent_state: torch.Tensor | None,
+        local_num_layers: int,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+    ) -> torch.Tensor:
+        """Prefill export path using chunk-local state tensors."""
+        layer = self.layers[layer_idx]
+        if layer.layer_type == "linear_attention":
+            if linear_conv_state is None or linear_recurrent_state is None:
+                raise ValueError("Linear-attention export requires local linear state tensors")
+            x = layer.input_layernorm(hidden_states)
+            conv_state = linear_conv_state[local_layer_idx : local_layer_idx + 1]
+            recurrent_state = linear_recurrent_state[local_layer_idx : local_layer_idx + 1]
+            attn_out, next_conv, next_rec = layer.self_attn.forward_prefill_export(
+                hidden_states=x,
+                conv_state=conv_state,
+                recurrent_state=recurrent_state,
+                has_previous_state=True,
+            )
+            linear_conv_state[local_layer_idx : local_layer_idx + 1] = next_conv
+            linear_recurrent_state[local_layer_idx : local_layer_idx + 1] = next_rec.to(
+                linear_recurrent_state.dtype
+            )
+            hidden_states = hidden_states + attn_out
+            post = layer.post_attention_layernorm(hidden_states)
+            return hidden_states + layer.mlp(post)
+
+        x = layer.input_layernorm(hidden_states)
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache_prefill(x, position_ids)
+
+        pos = current_pos
+        seq_len = expected_seq_len if expected_seq_len is not None else key_states.shape[2]
+        fixed_mask = self._build_fixed_cache_mask(
+            q_len=seq_len, current_pos=pos, dtype=MODEL_DTYPE, device=hidden_states.device
+        )
+        if k_cache is not None and v_cache is not None:
+            k_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + seq_len, :] = key_states
+            v_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + seq_len, :] = value_states
+            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+        else:
+            if kv_cache_0 is None:
+                raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
+            key_idx = local_layer_idx
+            value_idx = local_layer_idx + local_num_layers
+            kv_cache_0[key_idx:key_idx + 1, :, pos:pos + seq_len, :] = key_states
+            kv_cache_0[value_idx:value_idx + 1, :, pos:pos + seq_len, :] = value_states
+            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0)
+            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+        attn_out = layer.self_attn.forward_prefill(
+            hidden_states=x,
+            query_states=query_states,
+            kv_cache_layer=(key_cache, value_cache),
+            causal_mask=fixed_mask,
+            gate=gate,
+        )
+        hidden_states = hidden_states + attn_out
+        post = layer.post_attention_layernorm(hidden_states)
+        return hidden_states + layer.mlp(post)
+
+    def process_layers_prefill_export_local_state(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor,
+        kv_cache_0: torch.Tensor | None,
+        k_cache: torch.Tensor | None = None,
+        v_cache: torch.Tensor | None = None,
+        linear_conv_state: torch.Tensor | None = None,
+        linear_recurrent_state: torch.Tensor | None = None,
+        start_layer: int = 0,
+        end_layer: int | None = None,
+        apply_final_norm: bool = False,
+        expected_batch_size: int | None = None,
+        expected_seq_len: int | None = None,
+    ) -> torch.Tensor:
+        if end_layer is None:
+            end_layer = len(self.layers)
+        local_num_layers = end_layer - start_layer
+        for local_layer_idx, layer_idx in enumerate(range(start_layer, end_layer)):
+            hidden_states = self._process_layer_prefill_export_local_state(
+                layer_idx=layer_idx,
+                local_layer_idx=local_layer_idx,
+                hidden_states=hidden_states,
+                position_ids=position_ids,
+                causal_mask=causal_mask,
+                current_pos=current_pos,
+                kv_cache_0=kv_cache_0,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                linear_conv_state=linear_conv_state,
+                linear_recurrent_state=linear_recurrent_state,
+                local_num_layers=local_num_layers,
+                expected_batch_size=expected_batch_size,
+                expected_seq_len=expected_seq_len,
+            )
+        if apply_final_norm:
+            hidden_states = self.norm(hidden_states)
+        return hidden_states
+
+    def process_layers(
+        self,
+        hidden_states: torch.Tensor,
+        position_ids: torch.LongTensor,
+        causal_mask: torch.Tensor | None,
+        current_pos: torch.LongTensor | int | None = None,
+        start_layer: int = 0,
+        end_layer: int | None = None,
+        IN_PREFILL: bool = False,
+        apply_final_norm: bool = False,
+    ) -> torch.Tensor:
+        """Run a contiguous layer range with the existing cache/state contract."""
+        if end_layer is None:
+            end_layer = len(self.layers)
+
+        if current_pos is None:
+            for layer_idx in range(start_layer, end_layer):
+                hidden_states = self.layers[layer_idx](hidden_states, causal_mask, position_ids)
+        else:
+            for layer_idx in range(start_layer, end_layer):
+                if IN_PREFILL:
+                    hidden_states = self._process_layer_prefill(
+                        layer_idx, hidden_states, position_ids, causal_mask, current_pos
+                    )
+                else:
+                    hidden_states = self._process_layer_regular(
+                        layer_idx, hidden_states, position_ids, causal_mask, current_pos
+                    )
+
+        if apply_final_norm:
+            hidden_states = self.norm(hidden_states)
+        return hidden_states
+
     def forward(
         self,
         input_ids: torch.LongTensor,
@@ -1085,21 +1925,16 @@ class Qwen35Model(nn.Module):
         IN_PREFILL: bool = False,
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
-        if current_pos is None:
-            for layer in self.layers:
-                hidden_states = layer(hidden_states, causal_mask, position_ids)
-        else:
-            for layer_idx in range(len(self.layers)):
-                if IN_PREFILL:
-                    hidden_states = self._process_layer_prefill(
-                        layer_idx, hidden_states, position_ids, causal_mask, current_pos
-                    )
-                else:
-                    hidden_states = self._process_layer_regular(
-                        layer_idx, hidden_states, position_ids, causal_mask, current_pos
-                    )
-        hidden_states = self.norm(hidden_states)
-        return hidden_states
+        return self.process_layers(
+            hidden_states=hidden_states,
+            position_ids=position_ids,
+            causal_mask=causal_mask,
+            current_pos=current_pos,
+            start_layer=0,
+            end_layer=None,
+            IN_PREFILL=IN_PREFILL,
+            apply_final_norm=True,
+        )
 
 
 class Qwen35ForCausalLM(nn.Module):
@@ -1242,6 +2077,18 @@ class Qwen35ForCausalLM(nn.Module):
         missing, unexpected = self.load_state_dict(mapped_state, strict=False)
         missing = [m for m in missing if "rotary.inv_freq" not in m]
         missing = [m for m in missing if m not in {"model.kv_cache_0", "model.linear_conv_state", "model.linear_recurrent_state"}]
+        missing = [
+            m for m in missing
+            if not any(
+                stage_key in m
+                for stage_key in (
+                    ".self_attn.proj_stage.",
+                    ".self_attn.conv_stage.",
+                    ".self_attn.layout_stage.",
+                    ".self_attn.core_norm_stage.",
+                )
+            )
+        ]
 
         if missing:
             print("Missing keys (implemented path):", missing)

@@ -193,30 +193,21 @@ def combine_chunks(num_chunks, lut_bits=None, mode=None, prefix='llama', dedup_w
                 print(f"  Prefill: {prefill_path}")
                 print(f"  Output: {output_path}")
 
-                # Load models for metadata
-                ffn_model = ct.models.MLModel(ffn_path)
-                prefill_model = ct.models.MLModel(prefill_path)
+                if os.path.exists(output_path):
+                    print(f"  Skipping existing combined chunk: {output_path}")
+                    continue
 
                 # Create combined model (with optional anemll-dedup dedup)
                 print("Creating combined model...")
                 sources = [(ffn_path, "main", "infer"), (prefill_path, "main", "prefill")]
                 _save_multifunction_dedup(sources, temp_path, dedup_weights=dedup_weights)
 
-                # Load the temp model to add metadata
-                print("Loading combined model...")
-                combined_model = ct.models.MLModel(temp_path)
-                if combined_model is None:
-                    raise ValueError(f"Failed to load combined model")
-
-                # Add metadata and save final
-                print("Adding metadata...")
-                AddCombinedMetadata(combined_model, [ffn_model, prefill_model])
-                print(f"Saving final model to: {output_path}")
-                combined_model.save(output_path)
-
-                # Clean up temp file
-                shutil.rmtree(temp_path, ignore_errors=True)
-
+                # Promote the already-created multifunction package directly.
+                # This keeps the runtime-critical model package even when
+                # metadata-only postprocessing is flaky on macOS.
+                if os.path.exists(output_path):
+                    shutil.rmtree(output_path, ignore_errors=True)
+                shutil.move(temp_path, output_path)
                 print(f"Successfully combined chunk {chunk_idx+1}")
 
             except Exception as e:

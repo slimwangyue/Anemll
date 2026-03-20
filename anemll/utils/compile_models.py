@@ -238,7 +238,9 @@ def main():
             for i in range(args.chunk):
                 chunk_name = f'{args.prefix}_FFN_PF{lut_suffix}_chunk_{i+1:02d}of{args.chunk:02d}.mlpackage'
                 input_path = os.path.join(args.input, chunk_name)
-                compile_model(input_path, output_dir, force_mlprogram=args.force_mlprogram)
+                # Multi-function chunked models require ML Program compilation for
+                # function_name-based loading at runtime.
+                compile_model(input_path, output_dir, force_mlprogram=True)
         return 0
     elif args.part == 'monolithic':
         # Compile monolithic combined model

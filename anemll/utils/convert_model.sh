@@ -309,13 +309,18 @@ ARCH="llama"
 SLIDING_WINDOW=""
 HAS_SWA=false
 if [ -f "$CONFIG_FILE" ]; then
-    ARCH=$(jq -r '.model_type // (.architectures[0] // "")' "$CONFIG_FILE" | tr '[:upper:]' '[:lower:]')
+    ARCH=$(jq -r '.model_type // .text_config.model_type // (.architectures[0] // "")' "$CONFIG_FILE" | tr '[:upper:]' '[:lower:]')
     # Check for Qwen2 (which is Qwen 2.5) or Qwen2ForCausalLM architecture
     if [[ "$ARCH" == "qwen2" ]] || [[ "$ARCH" == *"qwen2forcausallm"* ]]; then
         CONVERTER="python3 -m anemll.ane_converter.qwen2_5_converter"
         # Use "qwen25" as default prefix for Qwen 2.5 models unless explicitly set
         if [ "$PREFIX" = "llama" ]; then
             PREFIX="qwen25"
+        fi
+    elif [[ "$ARCH" == "qwen3_5"* ]] || [[ "$ARCH" == "qwen3.5"* ]] || [[ "$ARCH" == *"qwen3_5"* ]]; then
+        CONVERTER="python3 -m anemll.ane_converter.qwen3_5_converter"
+        if [ "$PREFIX" = "llama" ]; then
+            PREFIX="qwen35"
         fi
     elif [[ "$ARCH" == qwen* ]]; then
         CONVERTER="python3 -m anemll.ane_converter.qwen_converter"
@@ -829,6 +834,13 @@ if [ "$MODEL_PATH" != "$OUTPUT_DIR" ]; then
 {
   \"tokenizer_class\": \"Qwen2Tokenizer\",
   \"model_type\": \"qwen2\"
+}
+EOF_CONFIG
+            elif [[ \"$ARCH\" == \"qwen3_5\"* ]] || [[ \"$ARCH\" == \"qwen3.5\"* ]] || [[ \"$ARCH\" == *\"qwen3_5\"* ]]; then
+                cat > \"$OUTPUT_DIR/config.json\" <<'EOF_CONFIG'
+{
+  \"tokenizer_class\": \"Qwen2Tokenizer\",
+  \"model_type\": \"qwen3_5\"
 }
 EOF_CONFIG
             elif [[ \"$ARCH\" == qwen* ]]; then

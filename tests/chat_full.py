@@ -339,6 +339,13 @@ def _resolve_argmax_chunk_layout(metadata, num_chunks, argmax_idx_flat=None):
     offsets = [i * inferred for i in range(max(num_chunks, 1))]
     return chunk_sizes, offsets
 
+
+def _ensure_input_ids_tensor(token_output):
+    """Normalize tokenizer outputs to a torch tensor of input ids."""
+    if hasattr(token_output, "input_ids"):
+        token_output = token_output.input_ids
+    return token_output.to(torch.int32)
+
 def format_manual_prompt(messages):
     """Format a plain text prompt when no chat template is available."""
     system = None
@@ -372,7 +379,7 @@ def format_manual_prompt(messages):
 def parse_ffn_filename(path):
     """Parse FFN model filename to extract chunk information."""
     path = Path(path)
-    pattern = r'FFN_PF.*_chunk_(\d+)of(\d+)'
+    pattern = r'FFN(?:_PF)?(?:_lut\d+)?_chunk_(\d+)of(\d+)'
     match = re.search(pattern, path.name)
     
     if match:
@@ -386,6 +393,20 @@ def find_all_chunks(base_path):
     path = Path(base_path)
     pattern = re.sub(r'_chunk_\d+of\d+', '_chunk_*', str(path))
     return sorted(glob.glob(pattern))
+
+def derive_split_chunk_paths(chunk_path):
+    """Derive sibling single-function chunk package paths from a combined FFN_PF chunk path."""
+    path = Path(chunk_path)
+    name = path.name
+    if "FFN_PF" in name:
+        infer_name = name.replace("FFN_PF", "FFN", 1)
+        prefill_name = name.replace("FFN_PF", "prefill", 1)
+    elif "FFN" in name:
+        infer_name = name
+        prefill_name = name.replace("FFN", "prefill", 1)
+    else:
+        raise ValueError(f"Cannot derive split chunk paths from chunk name: {name}")
+    return path.with_name(infer_name), path.with_name(prefill_name)
 
 def load_model(path, function_name=None, compute_unit=None):
     """Load a CoreML model, handling both .mlmodelc and .mlpackage formats."""
@@ -403,9 +424,9 @@ def load_model(path, function_name=None, compute_unit=None):
         else:
             # For packages (.mlpackage)
             if function_name:
-                return ct.models.MLModel(str(path), function_name=function_name)
+                return ct.models.MLModel(str(path), function_name=function_name, compute_units=compute_unit)
             else:
-                return ct.models.MLModel(str(path))
+                return ct.models.MLModel(str(path), compute_units=compute_unit)
                 
     except RuntimeError as e:
         if "valid manifest does not exist" in str(e):
@@ -416,6 +437,95 @@ def load_model(path, function_name=None, compute_unit=None):
             print("3. The model needs to be recompiled")
             print("\nTry using the .mlpackage version instead, or recompile the model.")
         raise
+
+def load_chunk_model_pair(chunk_path, compute_unit, needs_rotation=False):
+    """Load a chunked transformer stage, preferring combined multifunction loading.
+
+    If the combined FFN_PF package cannot be loaded by function name, fall back to
+    sibling single-function FFN/prefill packages when they exist.
+    """
+    chunk_path = Path(chunk_path)
+    # Direct split chunks are already single-function models. Do not try
+    # function_name loading on them, because CompiledMLModel rejects that for
+    # non-multifunction mlprograms.
+    if "FFN_PF" not in chunk_path.name and "FFN" in chunk_path.name:
+        infer_path, prefill_path = derive_split_chunk_paths(chunk_path)
+        if not infer_path.exists():
+            raise FileNotFoundError(
+                f"Missing split chunk pair for {chunk_path.name}: "
+                f"{infer_path.name}, {prefill_path.name}"
+            )
+        print("  Loading direct split FFN/prefill packages")
+        print(f"    infer:   {infer_path.name}")
+        if "qwen35_FFN_chunk_" in infer_path.name:
+            print("    prefill: <using infer model for local-state single-token path>")
+            infer_model = load_model(infer_path, compute_unit=compute_unit)
+            chunk_dict = {
+                'infer': infer_model,
+                'prefill': infer_model,
+            }
+            chunk_dict['_state_mode'] = 'local'
+        else:
+            if not prefill_path.exists():
+                raise FileNotFoundError(
+                    f"Missing split chunk pair for {chunk_path.name}: "
+                    f"{infer_path.name}, {prefill_path.name}"
+                )
+            print(f"    prefill: {prefill_path.name}")
+            chunk_dict = {
+                'infer': load_model(infer_path, compute_unit=compute_unit),
+                'prefill': load_model(prefill_path, compute_unit=compute_unit),
+            }
+        if needs_rotation:
+            infer_rotate_path = Path(str(infer_path).replace(".mlpackage", "_rot.mlpackage").replace(".mlmodelc", "_rot.mlmodelc"))
+            prefill_rotate_path = Path(str(prefill_path).replace(".mlpackage", "_rot.mlpackage").replace(".mlmodelc", "_rot.mlmodelc"))
+            if infer_rotate_path.exists() and prefill_rotate_path.exists():
+                chunk_dict['infer_rotate'] = load_model(infer_rotate_path, compute_unit=compute_unit)
+                chunk_dict['prefill_rotate'] = load_model(prefill_rotate_path, compute_unit=compute_unit)
+                print("  Rotation split packages loaded")
+        return chunk_dict
+    try:
+        chunk_dict = {
+            'infer': load_model(chunk_path, function_name='infer', compute_unit=compute_unit),
+            'prefill': load_model(chunk_path, function_name='prefill', compute_unit=compute_unit),
+        }
+        # Some multifunction packages load with a warning but are not actually backed
+        # by the Core ML Framework, so state creation still fails later.
+        try:
+            _state_probe = chunk_dict['prefill'].make_state()
+            del _state_probe
+        except Exception as state_error:
+            if "Cannot get state" in str(state_error) or "not loaded with the Core ML Framework" in str(state_error):
+                raise state_error
+        if needs_rotation:
+            try:
+                chunk_dict['infer_rotate'] = load_model(chunk_path, function_name='infer_rotate', compute_unit=compute_unit)
+                chunk_dict['prefill_rotate'] = load_model(chunk_path, function_name='prefill_rotate', compute_unit=compute_unit)
+                print("  Rotation functions loaded (4-function model)")
+            except Exception:
+                pass
+        return chunk_dict
+    except Exception as combined_error:
+        infer_path, prefill_path = derive_split_chunk_paths(chunk_path)
+        if not infer_path.exists() or not prefill_path.exists():
+            raise combined_error
+        print("  Combined multifunction load failed; falling back to split FFN/prefill packages")
+        print(f"    infer:   {infer_path.name}")
+        print(f"    prefill: {prefill_path.name}")
+        chunk_dict = {
+            'infer': load_model(infer_path, compute_unit=compute_unit),
+            'prefill': load_model(prefill_path, compute_unit=compute_unit),
+        }
+        if "qwen35_FFN_chunk_" in infer_path.name:
+            chunk_dict['_state_mode'] = 'local'
+        if needs_rotation:
+            infer_rotate_path = Path(str(infer_path).replace(".mlpackage", "_rot.mlpackage").replace(".mlmodelc", "_rot.mlmodelc"))
+            prefill_rotate_path = Path(str(prefill_path).replace(".mlpackage", "_rot.mlpackage").replace(".mlmodelc", "_rot.mlmodelc"))
+            if infer_rotate_path.exists() and prefill_rotate_path.exists():
+                chunk_dict['infer_rotate'] = load_model(infer_rotate_path, compute_unit=compute_unit)
+                chunk_dict['prefill_rotate'] = load_model(prefill_rotate_path, compute_unit=compute_unit)
+                print("  Rotation split packages loaded")
+        return chunk_dict
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Full Chat with CoreML LLaMA with context window shifting, gil resolved (c) 2025 Anemll')
@@ -780,11 +890,6 @@ def load_models(args,metadata):
             for chunk_path in chunk_paths:
                 print(f"\nLoading FFN+PREFILL chunk: {Path(chunk_path).name}")
                 try:
-                    # For chunked models, we need both infer and prefill functions
-                    chunk_dict = {
-                        'infer': load_model(chunk_path, function_name='infer', compute_unit=compute_unit),
-                        'prefill': load_model(chunk_path, function_name='prefill', compute_unit=compute_unit)
-                    }
                     # Try to load rotation functions only if context > sliding_window
                     # If context_length <= sliding_window, rotation is never needed
                     sliding_window = getattr(args, 'sliding_window', None)
@@ -792,16 +897,12 @@ def load_models(args,metadata):
                     needs_rotation = (sliding_window is not None and
                                      context_length is not None and
                                      context_length > sliding_window)
-
-                    if needs_rotation:
-                        try:
-                            chunk_dict['infer_rotate'] = load_model(chunk_path, function_name='infer_rotate', compute_unit=compute_unit)
-                            chunk_dict['prefill_rotate'] = load_model(chunk_path, function_name='prefill_rotate', compute_unit=compute_unit)
-                            print("  Rotation functions loaded (4-function model)")
-                        except Exception:
-                            # Rotation functions not available - standard 2-function model
-                            pass
-                    elif sliding_window is not None:
+                    chunk_dict = load_chunk_model_pair(
+                        chunk_path,
+                        compute_unit=compute_unit,
+                        needs_rotation=needs_rotation,
+                    )
+                    if sliding_window is not None and not needs_rotation:
                         print(f"  Skipping rotation functions (context {context_length} <= sliding_window {sliding_window})")
                     ffn_models.append(chunk_dict)
                     print("Chunk loaded successfully")
@@ -922,9 +1023,7 @@ def _prefill_single_token(embed_model, ffn_models, token_id, pos, context_length
     token_input = torch.tensor([[token_id]], dtype=torch.int32)
 
     # Run embeddings
-    hidden_states = torch.from_numpy(
-        embed_model.predict({'input_ids': token_input.numpy()})['hidden_states']
-    )
+    hidden_states = embed_model.predict({'input_ids': token_input.numpy()})['hidden_states']
 
     # Single position
     position_ids = torch.tensor([pos], dtype=torch.int32)
@@ -936,17 +1035,39 @@ def _prefill_single_token(embed_model, ffn_models, token_id, pos, context_length
     use_rotation = has_rotation and sliding_window is not None and pos >= sliding_window
     infer_func_name = 'infer_rotate' if use_rotation else 'infer'
 
-    # Run through FFN chunks
-    for ffn_model in ffn_models:
-        if isinstance(ffn_model, dict):
-            inputs = {
-                'hidden_states': hidden_states.numpy(),
-                'position_ids': position_ids.numpy(),
-                'causal_mask': single_mask.numpy(),
-                'current_pos': np.array([pos], dtype=np.int32)
-            }
-            output = ffn_model[infer_func_name].predict(inputs, state)
-            hidden_states = torch.from_numpy(output['output_hidden_states'])
+    # Keep the same inputs dictionary and update only hidden_states between
+    # chunk calls. This matches the explicit probe path that remains stable on
+    # macOS for split compiled chunks.
+    inputs = {
+        'hidden_states': hidden_states,
+        'position_ids': position_ids.numpy(),
+        'causal_mask': single_mask.numpy(),
+        'current_pos': np.array([pos], dtype=np.int32),
+    }
+
+    if len(ffn_models) == 4 and all(isinstance(ffn_model, dict) for ffn_model in ffn_models):
+        chunk_state = state[0] if isinstance(state, list) else state
+        output = ffn_models[0][infer_func_name].predict(inputs, chunk_state)
+        inputs['hidden_states'] = output['output_hidden_states']
+
+        chunk_state = state[1] if isinstance(state, list) else state
+        output = ffn_models[1][infer_func_name].predict(inputs, chunk_state)
+        inputs['hidden_states'] = output['output_hidden_states']
+
+        chunk_state = state[2] if isinstance(state, list) else state
+        output = ffn_models[2][infer_func_name].predict(inputs, chunk_state)
+        inputs['hidden_states'] = output['output_hidden_states']
+
+        chunk_state = state[3] if isinstance(state, list) else state
+        output = ffn_models[3][infer_func_name].predict(inputs, chunk_state)
+        inputs['hidden_states'] = output['output_hidden_states']
+    else:
+        for chunk_idx in range(len(ffn_models)):
+            ffn_model = ffn_models[chunk_idx]
+            if isinstance(ffn_model, dict):
+                chunk_state = state[chunk_idx] if isinstance(state, list) else state
+                output = ffn_model[infer_func_name].predict(inputs, chunk_state)
+                inputs['hidden_states'] = output['output_hidden_states']
 
 
 def run_prefill(embed_model, ffn_models, input_ids, current_pos, context_length, batch_size, state, causal_mask,
@@ -983,25 +1104,25 @@ def run_prefill(embed_model, ffn_models, input_ids, current_pos, context_length,
             batch_causal_mask = causal_mask[:, :, batch_pos:batch_pos + batch_size, :]
 
             # Run embeddings
-            hidden_states = torch.from_numpy(
-                embed_model.predict({'input_ids': batch_input.numpy()})['hidden_states']
-            )
+            hidden_states = embed_model.predict({'input_ids': batch_input.numpy()})['hidden_states']
 
             # Determine which prefill function to use based on position
             prefill_func_name = 'prefill_rotate' if batch_pos >= effective_sliding_window and has_rotation else 'prefill'
 
             # Run through FFN chunks
-            for ffn_model in ffn_models:
+            for chunk_idx in range(len(ffn_models)):
+                ffn_model = ffn_models[chunk_idx]
                 if isinstance(ffn_model, dict):
                     inputs = {
-                        'hidden_states': hidden_states.numpy(),
+                        'hidden_states': hidden_states,
                         'position_ids': position_ids.numpy(),
                         'causal_mask': batch_causal_mask.numpy(),
                         'current_pos': np.array([batch_pos], dtype=np.int32)
                     }
                     update_mask = make_update_mask(mask_len, batch_pos, batch_size) if use_update_mask else None
-                    output = _predict_with_optional_update_mask(ffn_model[prefill_func_name], inputs, state, update_mask)
-                    hidden_states = torch.from_numpy(output['output_hidden_states'])
+                    chunk_state = state[chunk_idx] if isinstance(state, list) else state
+                    output = _predict_with_optional_update_mask(ffn_model[prefill_func_name], inputs, chunk_state, update_mask)
+                    hidden_states = output['output_hidden_states']
 
             batch_pos = batch_end
 
@@ -1037,9 +1158,7 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
     current_token = input_ids[:, pos-1:pos]
 
     # Run embeddings
-    hidden_states = torch.from_numpy(
-        embed_model.predict({'input_ids': current_token.numpy()})['hidden_states']
-    )
+    hidden_states = embed_model.predict({'input_ids': current_token.numpy()})['hidden_states']
 
     # Create masks
     update_mask = torch.zeros((1, 1, context_length, 1), dtype=torch.float16)
@@ -1050,10 +1169,11 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
     single_causal_mask = causal_mask[:, :, pos-1:pos, :]
 
     # Run through FFN chunks
-    for ffn_model in ffn_models:
+    for chunk_idx in range(len(ffn_models)):
+        ffn_model = ffn_models[chunk_idx]
         if isinstance(ffn_model, dict):
             inputs = {
-                'hidden_states': hidden_states.numpy(),
+                'hidden_states': hidden_states,
                 'position_ids': position_ids.numpy(),
                 'causal_mask': single_causal_mask.numpy(),
                 'current_pos': position_ids.numpy()
@@ -1065,11 +1185,12 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
                 model_inputs = set()
             if 'update_mask' in model_inputs:
                 inputs['update_mask'] = update_mask.numpy()
-            output = ffn_model[infer_func_name].predict(inputs, state)
-            hidden_states = torch.from_numpy(output['output_hidden_states'])
+            chunk_state = state[chunk_idx] if isinstance(state, list) else state
+            output = ffn_model[infer_func_name].predict(inputs, chunk_state)
+            hidden_states = output['output_hidden_states']
     
     # Run LM head and get next token
-    lm_output = lmhead_model.predict({'hidden_states': hidden_states.numpy()})
+    lm_output = lmhead_model.predict({'hidden_states': hidden_states})
 
     # Check if model uses argmax_in_model mode (outputs argmax_idx/argmax_val instead of logits)
     argmax_in_model = metadata.get('argmax_in_model', False) if metadata else False
@@ -1128,6 +1249,8 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
             if key in lm_output:
                 logits_parts.append(torch.from_numpy(lm_output[key]))
         logits = torch.cat(logits_parts, dim=-1)
+    elif 'logits' in lm_output:
+        logits = torch.from_numpy(lm_output['logits'])
     else:
         logits = torch.from_numpy(lm_output['output_logits'])
     
@@ -1143,6 +1266,10 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
 def create_unified_state(ffn_models, context_length):
     """Create unified KV cache state for transformer."""
     if isinstance(ffn_models[0], dict):
+        if ffn_models[0].get('_state_mode') == 'local':
+            states = [chunk['infer'].make_state() for chunk in ffn_models]
+            print(f"\nCreated per-chunk transformer states for {len(ffn_models)} chunks")
+            return states
         # Use first FFN model's prefill function to create state
         state = ffn_models[0]['prefill'].make_state()
         print(f"\nCreated unified transformer state for {len(ffn_models)} chunks")
@@ -1589,12 +1716,12 @@ def chat_loop_monolithic(infer_model, prefill_model, tokenizer, metadata, state,
 
     def _build_base_input_ids(messages, show_debug):
         if use_chat_template:
-            base_input_ids = tokenizer.apply_chat_template(
+            base_input_ids = _ensure_input_ids_tensor(tokenizer.apply_chat_template(
                 messages,
                 return_tensors="pt",
                 add_generation_prompt=True,
                 **template_kwargs
-            ).to(torch.int32)
+            ))
             if show_debug and DEBUG_LEVEL >= 1 and not warmup:
                 label = "Full prompt with thinking" if THINKING_MODE else "Full prompt"
                 print(f"\n{DARK_BLUE}Debug: {label}:{RESET_COLOR}")
@@ -1622,12 +1749,12 @@ def chat_loop_monolithic(infer_model, prefill_model, tokenizer, metadata, state,
 
     def _build_base_input_ids(messages, show_debug):
         if use_chat_template:
-            base_input_ids = tokenizer.apply_chat_template(
+            base_input_ids = _ensure_input_ids_tensor(tokenizer.apply_chat_template(
                 messages,
                 return_tensors="pt",
                 add_generation_prompt=True,
                 **template_kwargs
-            ).to(torch.int32)
+            ))
             if show_debug and DEBUG_LEVEL >= 1 and not warmup:
                 label = "Full prompt with thinking" if THINKING_MODE else "Full prompt"
                 print(f"\n{DARK_BLUE}Debug: {label}:{RESET_COLOR}")
@@ -2006,12 +2133,12 @@ def chat_loop(embed_model, ffn_models, lmhead_model, tokenizer, metadata, state,
 
     def _build_base_input_ids(messages, show_debug):
         if use_chat_template:
-            base_input_ids = tokenizer.apply_chat_template(
+            base_input_ids = _ensure_input_ids_tensor(tokenizer.apply_chat_template(
                 messages,
                 return_tensors="pt",
                 add_generation_prompt=True,
                 **template_kwargs
-            ).to(torch.int32)
+            ))
             if show_debug and DEBUG_LEVEL >= 1 and not warmup:
                 label = "Full prompt with thinking" if THINKING_MODE else "Full prompt"
                 print(f"\n{DARK_BLUE}Debug: {label}:{RESET_COLOR}")
