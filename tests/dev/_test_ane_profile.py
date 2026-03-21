@@ -22,9 +22,9 @@ import coremltools as ct
 from transformers import AutoTokenizer
 
 MODEL_PATH = "/Users/yw68/local_llm/models/Qwen__Qwen3.5-4B"
-CTX = 256
+CTX = 1024
 NUM_CHUNKS = 4
-EXPORT_DIR = "/tmp/lut_vs_nolut_export"
+EXPORT_DIR = "/Users/yw68/Anemll_remote_run/qwen35_milestone1"
 
 CONVERSATION_TURNS = [
     "What is a stack in computer science?",
@@ -342,7 +342,7 @@ def main():
     stop_ids = _build_stop_ids(tokenizer)
 
     # Paths (B+E config: LUT4 embed, fp16 lm_head, LUT4 FFN)
-    embed_path = os.path.join(out_dir, "embeddings_LUT4.mlpackage")
+    embed_path = os.path.join(out_dir, "embeddings.mlpackage")
     lmhead_path = os.path.join(out_dir, "lm_head.mlpackage")
     ffn_label = "LUT4"
 
