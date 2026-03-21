@@ -765,6 +765,12 @@ class Qwen35LinearCoreNormStage(nn.Module):
                 math_dtype=MODEL_DTYPE if force_fp16_math else torch.float32,
             )
 
+        # Note: ANE recurrence produces tiny error (cos=0.9999, max_abs≈0.003).
+        # The gated-norm + output-projection amplifies this ~45× (ch0: 0.003→0.138),
+        # giving overall cos≈0.994 per layer. NOT caused by MIL/ANE op-fusion —
+        # splitting into separate models or removing MIL fuse passes does not help.
+        # See tests/dev/QWEN35_PREFILL_PARITY_RUNBOOK.md §11.6.5.
+
         core = self.norm(core.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim)).reshape(
             bsz, seq_len, self.value_dim
         )
@@ -1564,13 +1570,24 @@ class Qwen35Model(nn.Module):
         query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
         key_idx = layer_idx
         value_idx = layer_idx + self.config.num_hidden_layers
-        pos = current_pos
 
-        self.kv_cache_0[key_idx:key_idx + 1, :, pos:pos + 1, :] = key_states
-        self.kv_cache_0[value_idx:value_idx + 1, :, pos:pos + 1, :] = value_states
+        # one_hot write: compute mask from current_pos inside the graph.
+        # F.one_hot keeps pos as a tensor (no aten::Int), so it stays dynamic
+        # through jit.trace → MIL conversion.  Produces scatter-free mul+add
+        # that ANE handles natively.
+        # Use config constant (not tensor.shape) to avoid aten::size → aten::Int.
+        sl = self.config.state_length
+        update_mask = F.one_hot(current_pos.long(), num_classes=sl).to(hidden_states.dtype)
+        update_mask = update_mask.view(1, 1, sl, 1)
+        k_slice = self.kv_cache_0[key_idx : key_idx + 1]
+        k_expanded = key_states.expand_as(k_slice)
+        self.kv_cache_0[key_idx : key_idx + 1] = k_slice * (1.0 - update_mask) + k_expanded * update_mask
+        v_slice = self.kv_cache_0[value_idx : value_idx + 1]
+        v_expanded = value_states.expand_as(v_slice)
+        self.kv_cache_0[value_idx : value_idx + 1] = v_slice * (1.0 - update_mask) + v_expanded * update_mask
 
-        key_cache = self.kv_cache_0[key_idx:key_idx + 1].squeeze(0)
-        value_cache = self.kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+        key_cache = self.kv_cache_0[key_idx : key_idx + 1].squeeze(0)
+        value_cache = self.kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_regular(
             hidden_states=x,
             query_states=query_states,
@@ -1596,7 +1613,7 @@ class Qwen35Model(nn.Module):
             end_layer = len(self.layers)
         for layer_idx in range(start_layer, end_layer):
             hidden_states = self._process_layer_regular_single_token_export(
-                layer_idx, hidden_states, position_ids, causal_mask, current_pos
+                layer_idx, hidden_states, position_ids, causal_mask, current_pos,
             )
         if apply_final_norm:
             hidden_states = self.norm(hidden_states)
@@ -1652,10 +1669,20 @@ class Qwen35Model(nn.Module):
 
         x = layer.input_layernorm(hidden_states)
         query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
-        pos = current_pos
+        # one_hot write: compute mask from current_pos inside the graph.
+        # F.one_hot keeps pos as a tensor (no aten::Int), staying dynamic
+        # through jit.trace → MIL.  Produces ANE-native mul+add ops.
+        # Use config constant (not tensor.shape) to avoid aten::size → aten::Int.
+        sl = self.config.state_length
+        update_mask = F.one_hot(current_pos.long(), num_classes=sl).to(hidden_states.dtype)
+        update_mask = update_mask.view(1, 1, sl, 1)
         if k_cache is not None and v_cache is not None:
-            k_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + 1, :] = key_states
-            v_cache[local_layer_idx : local_layer_idx + 1, :, pos:pos + 1, :] = value_states
+            k_slice = k_cache[local_layer_idx : local_layer_idx + 1]
+            k_expanded = key_states.expand_as(k_slice)
+            k_cache[local_layer_idx : local_layer_idx + 1] = k_slice * (1.0 - update_mask) + k_expanded * update_mask
+            v_slice = v_cache[local_layer_idx : local_layer_idx + 1]
+            v_expanded = value_states.expand_as(v_slice)
+            v_cache[local_layer_idx : local_layer_idx + 1] = v_slice * (1.0 - update_mask) + v_expanded * update_mask
             key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
             value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
         else:
@@ -1663,10 +1690,14 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx:key_idx + 1, :, pos:pos + 1, :] = key_states
-            kv_cache_0[value_idx:value_idx + 1, :, pos:pos + 1, :] = value_states
-            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0)
-            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0)
+            k_slice = kv_cache_0[key_idx : key_idx + 1]
+            k_expanded = key_states.expand_as(k_slice)
+            kv_cache_0[key_idx : key_idx + 1] = k_slice * (1.0 - update_mask) + k_expanded * update_mask
+            v_slice = kv_cache_0[value_idx : value_idx + 1]
+            v_expanded = value_states.expand_as(v_slice)
+            kv_cache_0[value_idx : value_idx + 1] = v_slice * (1.0 - update_mask) + v_expanded * update_mask
+            key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
+            value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_regular(
             hidden_states=x,
             query_states=query_states,

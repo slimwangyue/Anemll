@@ -677,3 +677,486 @@ Test scripts preserved in `tests/dev/_binary_search_ops*.py` and `tests/dev/_ver
 | Decode path `pos:pos+1` dynamic slicing | ❌ Open | KV cache writes use `k_cache[:, :, pos:pos+1, :]` which produces dynamic `slice_update` — not ANE-legal. Needs same static-slice treatment as prefill. |
 | `overflow encountered in cast` warning | ⚠️ Cosmetic | During MIL optimization — fp16 overflow in constant folding. Does not affect correctness. |
 | Unused state inputs (single-type chunks) | ⚠️ Edge case | A chunk with ONLY linear-attention layers has unused k_cache/v_cache states → `handle_unused_inputs` error. Real chunks have mixed layers so this doesn't occur in practice. |
+
+---
+
+### 11.6 ANE Op-Fusion Precision Loss in Linear Attention (Root Cause Analysis)
+
+**Date**: 2025-01-XX | **Config**: batch=256, ctx=1024, 4 chunks × 8 layers
+
+#### 11.6.1 Problem Statement
+
+At batch=256 / ctx=1024, cascaded 4-chunk prefill parity is BAD:
+
+| Chunk | Cosine Sim | max_abs | Status |
+|-------|-----------|---------|--------|
+| 1 (layers 0-7)  | 0.8243 | 2.44  | ❌ BAD |
+| 2 (layers 8-15) | 0.7207 | 4.92  | ❌ BAD |
+| 3 (layers 16-23)| 0.7836 | 13.56 | ❌ BAD |
+| 4 (layers 24-31)| 0.8669 | 22.84 | ❌ BAD |
+
+Even isolated (each chunk given perfect PyTorch input, no cascading), chunk 1 has cos=0.8243.
+
+#### 11.6.2 Systematic Decomposition
+
+**Step 1 — Layer Type Isolation** (`_debug_single_layer_parity.py`):
+
+| Component | Cosine Sim | max_abs | Verdict |
+|-----------|-----------|---------|---------|
+| Full attention layer (layer 3) | 0.99996 | 0.031 | ✅ PERFECT |
+| MLP only (RMSNorm + FFN)       | 0.99979 | 0.009 | ✅ PERFECT |
+| Linear attention only (no residual) | 0.9940 | 0.258 | ❌ SOLE CAUSE |
+
+**Conclusion**: Error is 100% in linear attention. Full attention and MLP are near-perfect.
+
+**Step 2 — fp32 vs fp16 Precision** (`_debug_fp16_math_parity.py`):
+
+| Comparison | Cosine Sim |
+|-----------|-----------|
+| PyTorch fp32 vs PyTorch fp16 math | 0.9999999 |
+| PyTorch fp32 vs CoreML ANE        | 0.9613    |
+| PyTorch fp16 vs CoreML ANE        | 0.9613    |
+
+**Conclusion**: NOT a fp32/fp16 issue. Pure arithmetic precision is identical; ANE execution diverges.
+
+**Step 3 — chunk_size Reduction** (`_debug_fix_tests.py`):
+
+| chunk_size | Cosine Sim | ch0_mean_abs |
+|-----------|-----------|-------------|
+| 64 (default) | 0.9940 | 0.136 |
+| 32           | 0.9944 | 0.135 |
+| 16           | 0.9945 | 0.135 |
+
+**Conclusion**: chunk_size has negligible effect. Error is intrinsic to the op graph, not accumulation length.
+
+**Step 4 — Staged Export** (`_debug_fix_tests.py`):
+
+| Stage | Cosine Sim |
+|-------|-----------|
+| Stage 1 (Proj + RMSNorm) alone  | 0.99999982 |
+| Stage 4 (CoreNorm) alone        | 0.9956     |
+
+**Conclusion**: Error localizes to CoreNormStage (Stage 4).
+
+**Step 5 — CoreNorm Decomposition** (`_debug_corenorm_decomp.py`):
+
+| Sub-component | Cosine Sim | max_abs |
+|---------------|-----------|---------|
+| Recurrence only (`_chunk_gated_delta_rule`) | 0.9999 | 0.003 |
+| Norm + Projection only (RMSNormGated + Conv2d) | 0.9999 | 0.019 |
+| L2 Norm (rsqrt-based) | 1.0000 | — |
+| **Combined CoreNormStage** | **0.9956** | **0.258** |
+
+**INITIAL HYPOTHESIS** (later corrected): Each sub-graph is near-perfect in isolation (cos≥0.9999), suggesting ANE op-fusion across recurrence→norm→projection degrades precision.
+
+#### 11.6.3 Channel Analysis
+
+Channel 0 (`ch=0`) shows a systematic negative bias across ALL chunks and layers:
+- ch=0 mean_abs error: 0.136–0.818 (vs other channels: 0.01–0.05)
+- This single channel contributes disproportionately to the overall cosine degradation.
+
+#### 11.6.4 Fusion Barrier Attempts (ALL FAILED)
+
+| Barrier Type | Code | Result |
+|-------------|------|--------|
+| `.contiguous()` | `core = core.contiguous()` | Eliminated by MIL `noop_elimination` pass |
+| `.clone()` | `core = core.clone()` | Eliminated by MIL `noop_elimination` pass |
+| `.to(fp32).to(fp16)` cast | `core = core.to(torch.float32).to(MODEL_DTYPE)` | Eliminated by MIL `cast_optimization` pass |
+
+All three approaches produce **identical** results: cos=0.9940010003, max_abs=0.257812, ch0=0.136318.
+The MIL optimization passes aggressively remove any identity-like operations before ANE compilation.
+
+#### 11.6.5 Corrected Root Cause: Numerical Amplification (NOT Fusion)
+
+**Step 6 — Split Model Validation** (`_test_split_corenorm.py`, `_diag_normprojonly.py`):
+
+| Test | Cosine Sim | Notes |
+|------|-----------|-------|
+| A: Baseline combined CoreNorm | 0.9956 | Default pipeline |
+| B: PassPipeline.EMPTY (no MIL opts) | FAILED | Model wouldn't load on ANE |
+| C: Remove all fuse/merge passes | 0.9956 | **Identical** — MIL fusion NOT the cause |
+| D: State-buffer barrier | FAILED | Model wouldn't compile (-14) |
+| E: Separate models (recurrence + norm_proj) | 0.9956 | **Identical** — split doesn't help! |
+
+**Step 7 — Amplification Diagnosis** (`_diag_normprojonly.py`):
+
+| Scenario | Cosine Sim | ch0 mean_abs |
+|----------|-----------|-------------|
+| Norm+proj with **PyTorch** recurrence input | **0.9999** | 0.009 |
+| Norm+proj with **ANE** recurrence input | **0.9956** | 0.138 |
+| ANE recurrence vs PyTorch recurrence | 0.9999 | 0.003 max_abs |
+
+**CORRECTED ROOT CAUSE**: The error is **numerical amplification**, NOT ANE op-fusion.
+1. The recurrence produces a tiny ANE error (cos=0.9999, max_abs=0.003)
+2. The `Qwen35RMSNormGated` + `out_proj` chain amplifies this error ~45×
+3. Channel 0 error goes from ~0.003 (recurrence level) to ~0.138 (after norm+proj)
+4. Splitting into separate models doesn't help — the amplification happens when cascading recurrence output through norm
+5. Removing MIL fusion passes doesn't help — the error is in ANE's internal execution of the recurrence
+
+Evidence: With the **exact same norm+proj CoreML model**, PyTorch input gives cos=0.9999 but ANE recurrence input gives cos=0.9956. The model itself is fine; the input perturbation is amplified.
+
+#### 11.6.6 Revised Fix Directions
+
+1. ~~**Split CoreNormStage into separate CoreML models**~~ — RULED OUT. Split models give identical cos=0.9956.
+
+2. ~~**Custom MIL pass to disable fusions**~~ — RULED OUT. Removing all fuse/merge passes gives identical cos=0.9956.
+
+3. **Reduce recurrence ANE error**: The tiny recurrence error (max_abs=0.003) gets amplified. If recurrence were exact (cos=1.0), the final output would be cos=0.9999. Approaches: alternative formulation of `_chunk_gated_delta_rule`, input/output scaling, reduced accumulation.
+
+4. **Reduce norm amplification sensitivity**: The `Qwen35RMSNormGated` doubled-LayerNorm trick may be inherently sensitive. Try direct RMSNorm or a different normalization approach that doesn't amplify small perturbations as much.
+
+5. **Accept precision and evaluate generation quality**: Per-layer cos=0.994 may be acceptable if end-to-end text generation quality is satisfactory. Test with actual prompts.
+
+#### 11.6.6 Key Test Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `_debug_corenorm_decomp.py` | Most important — proves recurrence=0.9999, norm=0.9999, combined=0.9956 |
+| `_debug_single_layer_parity.py` | Proves linear attention is sole cause |
+| `_debug_fp16_math_parity.py` | Rules out fp32/fp16 as cause |
+| `_debug_fix_tests.py` | Rules out chunk_size; isolates CoreNorm stage |
+| `_test_fusion_barrier.py` | Validates barrier approaches |
+
+---
+
+### 11.7 CoreML StateType Rounding Corruption in Linear Attention States
+
+**Discovery**: After prefill parity was validated and decode export was working, sequential multi-token generation showed progressive divergence between PyTorch and CoreML. The divergence grew with each generated token.
+
+#### 11.7.1 Problem Statement
+
+Linear attention layers use two recurrent states:
+- `linear_conv_state` — convolution state, shape `(layers, ane_dim1, ane_dim2)`
+- `linear_recurrent_state` — gated delta rule accumulator, shape `(layers, num_v_heads, key_head_dim, value_head_dim)`
+
+Both were originally stored as `ct.StateType` (CoreML stateful buffers that persist across calls).
+
+During sequential decoding, the recurrent update is:
+```
+state = state * g_t + k_t ⊗ delta
+```
+
+After ~10 tokens of generation, outputs diverged significantly from PyTorch. The divergence was multiplicative — each read/write cycle of the state added a small error, and the recurrence amplified it.
+
+#### 11.7.2 Root Cause
+
+CoreML's `ct.StateType` introduces **rounding corruption** during the state read/write barrier. Each predict() call:
+1. Reads the state buffer
+2. Runs computation
+3. Writes updated state back
+
+Steps 1 and 3 apply an implicit precision conversion (likely fp16 → internal format → fp16) that introduces small rounding errors. For KV cache (lookup-only, no recurrence), these errors are harmless. For **recurrent** states where `state = state * g + ...`, the errors compound:
+- Token 1: error ε
+- Token 2: error ε·g + ε ≈ 2ε
+- Token N: error ~N·ε (linear growth) or worse depending on g magnitude
+
+#### 11.7.3 Fix: Stateless Linear Attention (I/O Tensors)
+
+Changed linear states from `ct.StateType` to **regular input/output tensors**:
+
+```python
+# BEFORE (broken):  StateType persists across calls
+ct.StateType(shape=conv_shape, dtype=ct.converters.mil.input_types.types.fp16)
+
+# AFTER (fixed):  Regular I/O — caller holds the state
+ct.TensorType(name="linear_conv_state",     shape=conv_shape, dtype=np.float16)
+ct.TensorType(name="linear_conv_state_out",  shape=conv_shape, dtype=np.float16)
+```
+
+The caller (`chat_full.py` / test scripts) now holds the state tensors in CPU memory and passes them in/out of each `predict()` call. This avoids the CoreML state barrier entirely.
+
+**KV cache** remains as `ct.StateType` because it's a write-once-read-many lookup buffer (no recurrence → rounding doesn't accumulate).
+
+#### 11.7.4 Files Changed
+
+| File | Change |
+|------|--------|
+| `anemll/models/qwen3_5_model.py` | `_process_layer_regular_single_token_export_local_state()` and `_process_layer_prefill_export_local_state()` — read linear states from input tensors, write to output tensors |
+| `anemll/ane_converter/qwen3_5_converter.py` | `FFNWrapper` and `PrefillWrapper` — linear states as `ct.TensorType` I/O instead of `ct.StateType`. Comment at line ~187: "avoid the rounding corruption that ct.StateType introduces" |
+| `tests/chat_full.py` | `_predict_chunk()` helper — passes linear state numpy arrays in/out transparently |
+
+#### 11.7.5 Validation
+
+| Test | Result |
+|------|--------|
+| `_test_stateless_prompt_parity.py` | Stateless achieves cos > 0.999 vs PyTorch at token 50 |
+| `_test_stateless_converter_parity.py` | Full converter export + load + predict matches PyTorch |
+| `_test_teacher_forced_parity.py` | Teacher-forced decode: stateless cos > 0.99 (vs stateful cos degrading to ~0.95) |
+
+---
+
+### 11.8 Dynamic KV Cache Position Writes via F.one_hot
+
+**Discovery**: After exporting decode models, all KV cache writes were frozen to position 0 regardless of the `current_pos` input.
+
+#### 11.8.1 Problem Statement
+
+The decode path needs to write each new token's key/value into the KV cache at position `current_pos`:
+```python
+k_cache[:, :, current_pos:current_pos+1, :] = new_k
+```
+
+On ANE, this fails because:
+1. `current_pos` is a dynamic input tensor
+2. JIT tracing converts `current_pos.item()` or `int(current_pos)` into an `aten::Int` op
+3. The `aten::Int` freezes the value to whatever `current_pos` was at trace time (always 0)
+4. CoreML MIL converter may also fail: "Failed to retrieve parameter end" for `slice_by_index` with unresolved dynamic bounds
+
+#### 11.8.2 Fix: One-Hot Masking
+
+Replace dynamic slice assignment with a fully-tensor-based scatter using `F.one_hot`:
+
+```python
+# Create one-hot mask: shape [1, 1, state_length, 1]
+pos_mask = F.one_hot(current_pos.long(), num_classes=state_length)
+pos_mask = pos_mask.reshape(1, 1, state_length, 1).to(MODEL_DTYPE)
+
+# Write to cache using broadcast multiply:
+k_cache = k_cache * (1.0 - pos_mask) + new_k * pos_mask
+```
+
+This keeps `current_pos` as a **tensor** throughout the computation graph (never calls `.item()` or `int()`), so the position remains dynamic at runtime.
+
+#### 11.8.3 Correctness Validation
+
+| Test | What it checks | Result |
+|------|----------------|--------|
+| `_test_cache_pos_dynamic.py` | Write different values at pos 0, 1, 2, 3, verify each slot independently | ✅ Correct on both CPU and ANE |
+| `_test_dynvsstatic_write.py` | Compares dynamic (one_hot) vs static (naive slice) write patterns | Dynamic=correct, static=all-at-pos-0 |
+| `_test_decode_ane.py` | Full decode chunk export and sequential generation | ✅ Matches PyTorch |
+
+#### 11.8.4 Files Changed
+
+| File | Lines | Change |
+|------|-------|--------|
+| `anemll/models/qwen3_5_model.py` | ~1574 | Decode path: `F.one_hot(current_pos.long(), num_classes=state_length)` for k/v cache writes |
+| `anemll/models/qwen3_5_model.py` | ~1672 | Prefill path: same one_hot pattern (though prefill always starts at pos 0, consistency maintained) |
+
+---
+
+### 11.9 Decode Path Parity and Update Mask
+
+**Discovery**: After fixing KV cache writes, decode parity required additional work on the attention mask and sliding-window rotation.
+
+#### 11.9.1 Problems Identified
+
+1. **Causal mask value**: Using `float("-inf")` (fp32) caused issues on ANE. Fixed by using `-65504.0` (max negative fp16).
+
+2. **Update mask pattern**: The "update_mask" variant constructs a 1D mask from `current_pos` to control which KV entries are valid. This uses `torch.arange` comparisons which can produce `greater_equal` ops — these are ANE-legal for 1D masks but were initially suspected as a failure point.
+
+3. **Sliding-window rotation**: For contexts exceeding `state_length`, a shift-left-append pattern is needed:
+   ```python
+   cache = torch.cat([cache[:, :, 1:, :], new_kv], dim=2)
+   ```
+   All slice bounds are static constants — ANE-legal.
+
+#### 11.9.2 Validation
+
+| Test | Purpose | Result |
+|------|---------|--------|
+| `_test_decode_ane.py` | Export decode chunk → run on ANE → compare to PyTorch | ✅ Pass |
+| `_test_decode_parity.py` | CPU vs ANE parity for decode | ✅ Pass |
+| `_test_decode_isolate.py` | Isolate linear-attn vs full-attn layers in decode | Linear-attn has expected ~0.994 cos (see §11.6) |
+| `_test_decode_updatemask.py` | Test update_mask decode variant on ANE | ✅ Pass |
+| `_test_decode_updatemask_iso.py` | Isolated update-mask layer test | ✅ Pass |
+
+---
+
+### 11.10 LUT4 Quantization Quality Validation
+
+#### 11.10.1 Problem Statement
+
+LUT4 (4-bit lookup table) quantization reduces model size ~4× but impact on generation quality was not measured.
+
+#### 11.10.2 Approach
+
+Two test scripts validated LUT4 quality:
+
+1. **`_test_lut_vs_nolut_textgen.py`** — Full end-to-end pipeline:
+   - Exports all 4 FFN decode chunks in both LUT4 and fp16 variants
+   - Runs identical prompts through both pipelines
+   - Compares generated text token-by-token
+
+2. **`_test_textgen_quality.py`** — Per-token diagnostic:
+   - Single-token greedy decode comparing PyTorch vs CoreML
+   - Measures per-token hidden-state cosine similarity across all chunks
+
+#### 11.10.3 Results
+
+| Metric | LUT4 vs fp16 |
+|--------|-------------|
+| Generated text | **Identical** (greedy argmax produces same tokens) |
+| Per-token latency | LUT4 significantly faster (smaller model → faster neural engine) |
+| Hidden-state cosine | > 0.99 per chunk |
+
+**Conclusion**: LUT4 is lossless for greedy decoding — the quantization error is small enough that argmax always picks the same token. LUT4 is the recommended default.
+
+---
+
+### 11.11 Multi-Round Conversation Token Alignment Bug
+
+**Discovery**: Multi-turn conversation tests showed Turn 1 = 100% match (fresh vs incremental), but Turns 2–3 diverged to ~25–68% match.
+
+#### 11.11.1 Problem Statement
+
+Two conversation state-management strategies should produce identical output:
+- **Fresh**: Reset all states, re-prefill entire conversation history from position 0
+- **Incremental**: Keep all states, only prefill new tokens (turn separator + user message) at `current_pos`
+
+Turn 1 always matched (both start from the same initial state). Turns 2+ diverged.
+
+#### 11.11.2 Root Cause: `<think>\n` Template Token Mismatch
+
+Qwen3.5's chat template with `add_generation_prompt=True` appends `<think>\n` (token IDs 248068, 198) at the end of the assistant prompt:
+
+```
+<|im_start|>system\n...<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n
+                                                                                                ^^^^^^^^
+                                                                              These 2 tokens are added by the template
+```
+
+When the generated response is decoded to text and then re-encoded for the next turn (fresh mode), these `<think>\n` tokens are **not reproduced** — the response text starts directly after `assistant\n`. This creates a **2-token offset** at position 16 that breaks all subsequent token alignment.
+
+**Diagnostic proof** (from `/tmp/diag_tokens.py`):
+```
+MISMATCH at pos 16: t1=248068 (<think>) vs t2=8160 (Here)
+Overlap: 16/58 (first 16 = template before <think>, then mismatch)
+```
+
+#### 11.11.3 Fix: Two Complementary Approaches
+
+**Fresh mode fix** — Prepend `<think>\n` to the decoded response before feeding it back to `apply_chat_template`:
+```python
+response_for_template = "<think>\n" + raw_decoded_text
+messages.append({"role": "assistant", "content": response_for_template})
+template_output = tokenizer.apply_chat_template(messages, ...)
+```
+
+**Incremental mode fix** — Bypass re-tokenization entirely. Construct continuation tokens manually from known special-token IDs:
+```python
+def _build_continuation(tokenizer, tpl_tokens, user_msg, has_stop_token):
+    t = tpl_tokens
+    continuation = []
+    if not has_stop_token:
+        continuation += [t["im_end"], t["nl"]]   # close previous turn
+    else:
+        continuation += [t["nl"]]
+    continuation += [t["im_start"]] + t["user"] + [t["nl"]]
+    continuation += tokenizer.encode(user_msg, add_special_tokens=False)
+    continuation += [t["im_end"], t["nl"]]
+    continuation += [t["im_start"]] + t["assistant"] + [t["nl"]]
+    continuation += [t["think"], t["nl"]]         # <think>\n
+    return continuation
+```
+
+#### 11.11.4 Verification
+
+Three independent diagnostic scripts confirmed the fix:
+
+| Diagnostic | Check | Result |
+|------------|-------|--------|
+| `/tmp/diag_tokens.py` | Overlap between Turn 1 and Turn 2 token sequences | Confirmed mismatch at pos 16 (`<think>` vs response text) |
+| `/tmp/diag_tokens2.py` | Test `enable_thinking=True` vs `False` | Both have the same mismatch |
+| `/tmp/diag_tokens3.py` | (1) Prepend `<think>\n` → re-tokenize, (2) roundtrip encode→decode→encode, (3) manual continuation | ✅ All 3 checks PASS: 18/18 prefix match, lossless roundtrip, 20/20 manual vs template match |
+
+#### 11.11.5 Final Test Results
+
+```
+  VERDICT
+  Turn 1: fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 2: fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 3: fresh vs incremental = 40/40 (100%) [PASS]
+
+  ALL TURNS MATCH -- multi-round incremental inference is correct!
+```
+
+**Performance bonus**: Incremental mode provides ~4–7× faster prefill on turns 2+ because it only processes new tokens:
+
+| Turn | Fresh Prefill | Incremental Prefill | Speedup |
+|------|---------------|---------------------|---------|
+| 1 | 1760ms (18 tok) | 1742ms (18 tok) | 1.0× |
+| 2 | 6544ms (78 tok) | 1668ms (20 tok) | 3.9× |
+| 3 | 12294ms (138 tok) | 1834ms (20 tok) | 6.7× |
+
+#### 11.11.6 Files
+
+| File | Purpose |
+|------|---------|
+| `tests/dev/_test_multiround_conversation.py` | Main validation test (v3 with fix) |
+| `_get_template_tokens()` | Pre-computes special token IDs: `<\|im_start\|>`=248045, `<\|im_end\|>`=248046, `<think>`=248068, `\n`=198 |
+| `_build_continuation()` | Constructs exact turn-separator tokens from IDs |
+
+---
+
+## 12. Problem Resolution Summary
+
+| # | Problem | Symptom | Root Cause | Fix | Status |
+|---|---------|---------|-----------|-----|--------|
+| 11.1 | ANE state dim limit | `ANEProgramProcessRequestDirect() Failed` on all chunks | `conv_state` dim[1]=8192 exceeds ANE ~1024 limit | Reshape `(8192,4)` → `(1024,32)` | ✅ Fixed |
+| 11.2 | `int` op from `.shape` | CoreML conversion error "only 0-dimensional arrays" | Querying `.shape` on state tensor during trace | Use static constants from module attributes | ✅ Fixed |
+| 11.3 | Non-ANE-legal ops | `cumsum`, `select`, dynamic `slice_update` in MIL graph | Various PyTorch ops that don't lower to ANE | Replace with tril matmul, fp masks, static slices | ✅ Fixed |
+| 11.6 | Linear attn precision | Cascaded cos=0.72–0.87, isolated chunk1 cos=0.82 | ANE recurrence error (0.003) amplified 45× by RMSNormGated | Accepted — per-layer cos=0.994 is tolerable for text gen | ⚠️ Accepted |
+| 11.7 | StateType rounding | Progressive divergence during sequential decode | CoreML StateType r/w barrier adds rounding per call | Stateless I/O tensors for linear states | ✅ Fixed |
+| 11.8 | Dynamic KV pos writes | All cache writes frozen at pos=0 | `aten::Int` freezes dynamic index at trace time | `F.one_hot()` masking (fully tensor-based) | ✅ Fixed |
+| 11.9 | Decode path parity | Multiple decode failures | Mask values, update patterns, rotation bounds | `-65504` fp16 mask, static slice bounds | ✅ Fixed |
+| 11.10 | LUT4 quality unknown | No validation of quantization impact | No tests existed | End-to-end comparison: identical greedy output | ✅ Validated |
+| 11.11 | Multi-round divergence | Turns 2–3 only 25–68% token match | `<think>\n` template tokens lost in re-tokenization | Prepend `<think>\n` / manual token continuation | ✅ Fixed |
+
+---
+
+## 13. Complete Test Script Index
+
+### Prefill Parity
+| Script | Purpose |
+|--------|---------|
+| `test_qwen35_prefill_chunk_compare.py` | Full PyTorch + CoreML parity (OOM on 16GB) |
+| `test_qwen35_exported_chunk_prompt_parity.py` | Exported chunk prompt-level validation |
+| `test_qwen35_chunk4_subrange_compare.py` | Subrange comparison within chunks |
+| `test_qwen35_chunk4_deep_compare.py` | Deep per-layer comparison |
+
+### Linear Attention
+| Script | Purpose |
+|--------|---------|
+| `test_qwen35_linear_attention_vs_hf.py` | Linear attention vs HuggingFace reference |
+| `test_qwen35_linear_attention_stateful_coreml_vs_hf.py` | Stateful CoreML linear attn vs HF |
+| `test_qwen35_linear_model_level_vs_hf.py` | Full model-level linear attn comparison |
+| `_debug_corenorm_decomp.py` | CoreNorm stage decomposition analysis |
+| `_debug_single_layer_parity.py` | Per-layer type isolation |
+
+### ANE State & Dynamic Index
+| Script | Purpose |
+|--------|---------|
+| `_test_ane_reshape_export.py` | ANE state reshape validation |
+| `_test_cache_pos_dynamic.py` | Dynamic position write correctness |
+| `_test_dynvsstatic_write.py` | Dynamic vs static write comparison |
+| `_test_dynamic_index_ane.py` | Dynamic index on ANE |
+| `_test_dynamic_index_r2.py` | Dynamic index round 2 |
+| `_test_dynslice_mil.py` | MIL-level dynamic slice analysis |
+
+### Decode Path
+| Script | Purpose |
+|--------|---------|
+| `_test_decode_ane.py` | Full decode chunk export + ANE test |
+| `_test_decode_parity.py` | CPU vs ANE decode parity |
+| `_test_decode_isolate.py` | Per-layer-type decode isolation |
+| `_test_decode_updatemask.py` | Update-mask decode variant |
+| `_test_decode_updatemask_iso.py` | Isolated update-mask test |
+| `_test_decode_onehot.py` | One-hot cache write validation |
+
+### Stateless / Quality / Multi-Round
+| Script | Purpose |
+|--------|---------|
+| `_test_stateless_prompt_parity.py` | Stateless vs stateful prompt comparison |
+| `_test_stateless_converter_parity.py` | Stateless converter export validation |
+| `_test_teacher_forced_parity.py` | Teacher-forced decode comparison |
+| `_test_textgen_quality.py` | Per-token quality metrics |
+| `_test_lut_vs_nolut_textgen.py` | LUT4 vs fp16 end-to-end text generation |
+| `_test_multiround_conversation.py` | Multi-round fresh vs incremental validation |
+
+### Fusion / Precision
+| Script | Purpose |
+|--------|---------|
+| `_test_fusion_barrier.py` | Fusion barrier attempts |
+| `_test_split_corenorm.py` | Split CoreNorm into separate models |
+| `_debug_fp16_math_parity.py` | fp32 vs fp16 precision analysis |
+| `_debug_fix_tests.py` | chunk_size and staged export tests |

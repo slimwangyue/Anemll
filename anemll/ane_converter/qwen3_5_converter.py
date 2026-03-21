@@ -184,36 +184,10 @@ class Qwen35Converter(BaseConverter):
                 )
             ]
 
-        if cfg.has_linear_attention():
-            conv_dim = (
-                cfg.text_config.linear_num_key_heads * cfg.text_config.linear_key_head_dim * 2
-                + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
-            )
-            conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
-            ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
-            states.append(
-                ct.StateType(
-                    wrapped_type=ct.TensorType(
-                        shape=(num_layers, ane_dim1, ane_dim2),
-                        dtype=np.float16,
-                    ),
-                    name=f"{prefix}linear_conv_state",
-                )
-            )
-            states.append(
-                ct.StateType(
-                    wrapped_type=ct.TensorType(
-                        shape=(
-                            num_layers,
-                            cfg.text_config.linear_num_value_heads,
-                            cfg.text_config.linear_key_head_dim,
-                            cfg.text_config.linear_value_head_dim,
-                        ),
-                        dtype=np.float16,
-                    ),
-                    name=f"{prefix}linear_recurrent_state",
-                )
-            )
+        # NOTE: linear_conv_state and linear_recurrent_state are intentionally
+        # NOT included as CoreML states.  They are passed as regular I/O tensors
+        # to avoid the rounding corruption that ct.StateType introduces in the
+        # read/write cycle of recurrent states (see stateless parity tests).
         return states
 
     @staticmethod
@@ -261,8 +235,6 @@ class Qwen35Converter(BaseConverter):
             for name, buffer in module.named_buffers():
                 if (
                     "kv_cache_" in name
-                    or "linear_conv_state" in name
-                    or "linear_recurrent_state" in name
                     or name in {"k_cache", "v_cache"}
                 ):
                     buffer.zero_()
@@ -448,35 +420,23 @@ class Qwen35Converter(BaseConverter):
                     )
                     conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
                     ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
-                    self.register_buffer(
-                        "linear_conv_state",
-                        torch.zeros(
-                            (self.local_num_layers, ane_dim1, ane_dim2),
-                            dtype=MODEL_DTYPE,
-                            device=TEST_DEVICE,
-                        ),
+                    # Store shapes for forward() — states are I/O, NOT register_buffer
+                    self._lin_conv_shape = (self.local_num_layers, ane_dim1, ane_dim2)
+                    self._lin_rec_shape = (
+                        self.local_num_layers,
+                        cfg.text_config.linear_num_value_heads,
+                        cfg.text_config.linear_key_head_dim,
+                        cfg.text_config.linear_value_head_dim,
                     )
-                    self.register_buffer(
-                        "linear_recurrent_state",
-                        torch.zeros(
-                            (
-                                self.local_num_layers,
-                                cfg.text_config.linear_num_value_heads,
-                                cfg.text_config.linear_key_head_dim,
-                                cfg.text_config.linear_value_head_dim,
-                            ),
-                            dtype=MODEL_DTYPE,
-                            device=TEST_DEVICE,
-                        ),
-                    )
+                    self._has_linear = True
                 else:
-                    self.linear_conv_state = None
-                    self.linear_recurrent_state = None
+                    self._has_linear = False
                 self.states = Qwen35Converter.GetChunkLocalTransformerStates(
                     model, self.local_num_layers, prefix="", split_full_attention_kv=True
                 )
 
-            def forward(self, hidden_states, position_ids, causal_mask, current_pos):
+            def forward(self, hidden_states, position_ids, causal_mask, current_pos,
+                        linear_conv_state, linear_recurrent_state):
                 out = self.model.model.process_layers_regular_single_token_export_local_state(
                     hidden_states=hidden_states,
                     position_ids=position_ids,
@@ -485,18 +445,19 @@ class Qwen35Converter(BaseConverter):
                     kv_cache_0=None,
                     k_cache=self.k_cache,
                     v_cache=self.v_cache,
-                    linear_conv_state=self.linear_conv_state,
-                    linear_recurrent_state=self.linear_recurrent_state,
+                    linear_conv_state=linear_conv_state,
+                    linear_recurrent_state=linear_recurrent_state,
                     start_layer=self.start_layer,
                     end_layer=self.end_layer,
                     apply_final_norm=False,
                 )
                 if self.end_layer is None or self.end_layer == len(self.model.model.layers):
                     out = self.model.model.norm(out)
-                return out
+                return out, linear_conv_state, linear_recurrent_state
 
         wrapper = FFNWrapper(model, start_layer, end_layer).eval()
-        hidden_states = torch.zeros((1, 1, model.config.hidden_size), dtype=torch.float16, device=TEST_DEVICE)
+        cfg = model.config
+        hidden_states = torch.zeros((1, 1, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE)
         position_ids = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
         causal_mask = torch.zeros((1, 1, 1, self.context_length), dtype=torch.float16, device=TEST_DEVICE)
         # Match the teacher decode contract: single-token chunk exports trace
@@ -504,8 +465,20 @@ class Qwen35Converter(BaseConverter):
         # first-step cache/state contents.
         current_pos = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
 
+        # Linear attention states as regular I/O tensors (not CoreML state)
+        if wrapper._has_linear:
+            lin_conv = torch.zeros(wrapper._lin_conv_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros(wrapper._lin_rec_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+        else:
+            # Dummy zero-size placeholders (model has no linear attention)
+            lin_conv = torch.zeros((local_num_layers, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros((local_num_layers, 1, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+
         self._reset_state_buffers(wrapper)
-        traced = torch.jit.trace(wrapper, (hidden_states, position_ids, causal_mask, current_pos))
+        traced = torch.jit.trace(
+            wrapper, (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec),
+            check_trace=False,
+        )
         self._reset_state_buffers(wrapper)
         self._reset_state_buffers(traced)
 
@@ -516,8 +489,14 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="position_ids", shape=position_ids.shape, dtype=np.int32),
                 ct.TensorType(name="causal_mask", shape=causal_mask.shape, dtype=np.float16),
                 ct.TensorType(name="current_pos", shape=current_pos.shape, dtype=np.int32),
+                ct.TensorType(name="linear_conv_state", shape=lin_conv.shape, dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state", shape=lin_rec.shape, dtype=np.float16),
             ],
-            outputs=[ct.TensorType(name="output_hidden_states", dtype=np.float16)],
+            outputs=[
+                ct.TensorType(name="output_hidden_states", dtype=np.float16),
+                ct.TensorType(name="linear_conv_state_out", dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
+            ],
             states=wrapper.states,
             compute_precision=ct.precision.FLOAT16,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
@@ -593,30 +572,17 @@ class Qwen35Converter(BaseConverter):
                     )
                     conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
                     ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
-                    self.register_buffer(
-                        "linear_conv_state",
-                        torch.zeros(
-                            (self.local_num_layers, ane_dim1, ane_dim2),
-                            dtype=MODEL_DTYPE,
-                            device=TEST_DEVICE,
-                        ),
+                    # Store shapes for forward() — states are I/O, NOT register_buffer
+                    self._lin_conv_shape = (self.local_num_layers, ane_dim1, ane_dim2)
+                    self._lin_rec_shape = (
+                        self.local_num_layers,
+                        cfg.text_config.linear_num_value_heads,
+                        cfg.text_config.linear_key_head_dim,
+                        cfg.text_config.linear_value_head_dim,
                     )
-                    self.register_buffer(
-                        "linear_recurrent_state",
-                        torch.zeros(
-                            (
-                                self.local_num_layers,
-                                cfg.text_config.linear_num_value_heads,
-                                cfg.text_config.linear_key_head_dim,
-                                cfg.text_config.linear_value_head_dim,
-                            ),
-                            dtype=MODEL_DTYPE,
-                            device=TEST_DEVICE,
-                        ),
-                    )
+                    self._has_linear = True
                 else:
-                    self.linear_conv_state = None
-                    self.linear_recurrent_state = None
+                    self._has_linear = False
                 for layer_idx in range(self.start_layer, self.end_layer if self.end_layer is not None else len(self.model.model.layers)):
                     layer = self.model.model.layers[layer_idx]
                     if getattr(layer, "layer_type", None) == "linear_attention":
@@ -626,7 +592,8 @@ class Qwen35Converter(BaseConverter):
                     model, self.local_num_layers, prefix="", split_full_attention_kv=True
                 )
 
-            def forward(self, hidden_states, position_ids, causal_mask, current_pos):
+            def forward(self, hidden_states, position_ids, causal_mask, current_pos,
+                        linear_conv_state, linear_recurrent_state):
                 out = self.model.model.process_layers_prefill_export_local_state(
                     hidden_states=hidden_states,
                     position_ids=position_ids,
@@ -635,8 +602,8 @@ class Qwen35Converter(BaseConverter):
                     kv_cache_0=None,
                     k_cache=self.k_cache,
                     v_cache=self.v_cache,
-                    linear_conv_state=self.linear_conv_state,
-                    linear_recurrent_state=self.linear_recurrent_state,
+                    linear_conv_state=linear_conv_state,
+                    linear_recurrent_state=linear_recurrent_state,
                     start_layer=self.start_layer,
                     end_layer=self.end_layer,
                     apply_final_norm=False,
@@ -644,12 +611,13 @@ class Qwen35Converter(BaseConverter):
                     expected_seq_len=self.export_seq_len,
                 )
                 if self.end_layer is None or self.end_layer == len(self.model.model.layers):
-                    return out[:, 0:1, :]
-                return out
+                    return out[:, 0:1, :], linear_conv_state, linear_recurrent_state
+                return out, linear_conv_state, linear_recurrent_state
 
         wrapper = PrefillWrapper(model, start_layer, end_layer, self.batch_size).eval()
+        cfg = model.config
         hidden_states = torch.zeros(
-            (1, self.batch_size, model.config.hidden_size), dtype=torch.float16, device=TEST_DEVICE
+            (1, self.batch_size, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
         )
         position_ids = torch.zeros((self.batch_size,), dtype=torch.int32, device=TEST_DEVICE)
         causal_mask = torch.zeros(
@@ -658,8 +626,19 @@ class Qwen35Converter(BaseConverter):
         # Match the teacher prefill contract: prefill starts writing at position 0.
         current_pos = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
 
+        # Linear attention states as regular I/O tensors (not CoreML state)
+        if wrapper._has_linear:
+            lin_conv = torch.zeros(wrapper._lin_conv_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros(wrapper._lin_rec_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+        else:
+            lin_conv = torch.zeros((local_num_layers, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros((local_num_layers, 1, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+
         self._reset_state_buffers(wrapper)
-        traced = torch.jit.trace(wrapper, (hidden_states, position_ids, causal_mask, current_pos))
+        traced = torch.jit.trace(
+            wrapper, (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec),
+            check_trace=False,
+        )
         self._reset_state_buffers(wrapper)
         self._reset_state_buffers(traced)
 
@@ -670,8 +649,14 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="position_ids", shape=position_ids.shape, dtype=np.int32),
                 ct.TensorType(name="causal_mask", shape=causal_mask.shape, dtype=np.float16),
                 ct.TensorType(name="current_pos", shape=current_pos.shape, dtype=np.int32),
+                ct.TensorType(name="linear_conv_state", shape=lin_conv.shape, dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state", shape=lin_rec.shape, dtype=np.float16),
             ],
-            outputs=[ct.TensorType(name="output_hidden_states", dtype=np.float16)],
+            outputs=[
+                ct.TensorType(name="output_hidden_states", dtype=np.float16),
+                ct.TensorType(name="linear_conv_state_out", dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
+            ],
             states=wrapper.states,
             compute_precision=ct.precision.FLOAT16,
             compute_units=ct.ComputeUnit.CPU_AND_NE,

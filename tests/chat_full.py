@@ -1014,6 +1014,50 @@ def _predict_with_optional_update_mask(model, inputs, state, update_mask):
             return model.predict(inputs, state)
         raise
 
+
+def _init_linear_states_for_chunks(ffn_models):
+    """Probe CoreML model specs and initialize per-chunk linear attention state
+    arrays.  Stores them as ``_linear_conv_state`` / ``_linear_recurrent_state``
+    inside each chunk dict so that predict helpers can read/write them
+    transparently.
+    """
+    for chunk in ffn_models:
+        if not isinstance(chunk, dict):
+            continue
+        model = chunk.get('infer') or chunk.get('prefill')
+        if model is None:
+            continue
+        try:
+            spec = model.get_spec()
+            input_names = {inp.name for inp in spec.description.input}
+        except Exception:
+            continue
+        if 'linear_conv_state' not in input_names:
+            continue
+        for inp in spec.description.input:
+            if inp.name == 'linear_conv_state':
+                shape = tuple(d.size for d in inp.type.multiArrayType.shape)
+                chunk['_linear_conv_state'] = np.zeros(shape, dtype=np.float16)
+            elif inp.name == 'linear_recurrent_state':
+                shape = tuple(d.size for d in inp.type.multiArrayType.shape)
+                chunk['_linear_recurrent_state'] = np.zeros(shape, dtype=np.float16)
+
+
+def _predict_chunk(ffn_model, func_name, inputs, chunk_state, update_mask=None):
+    """Run predict on a single FFN chunk, handling linear attention I/O and
+    optional update_mask transparently.  Returns the raw output dict.
+    """
+    pred_inputs = dict(inputs)
+    if '_linear_conv_state' in ffn_model:
+        pred_inputs['linear_conv_state'] = ffn_model['_linear_conv_state']
+        pred_inputs['linear_recurrent_state'] = ffn_model['_linear_recurrent_state']
+    model = ffn_model[func_name]
+    output = _predict_with_optional_update_mask(model, pred_inputs, chunk_state, update_mask)
+    if 'linear_conv_state_out' in output:
+        ffn_model['_linear_conv_state'] = output['linear_conv_state_out']
+        ffn_model['_linear_recurrent_state'] = output['linear_recurrent_state_out']
+    return output
+
 def _prefill_single_token(embed_model, ffn_models, token_id, pos, context_length, state, causal_mask, sliding_window, has_rotation):
     """Process a single token through embed + FFN chunks (no lmhead needed for prefill).
 
@@ -1047,26 +1091,26 @@ def _prefill_single_token(embed_model, ffn_models, token_id, pos, context_length
 
     if len(ffn_models) == 4 and all(isinstance(ffn_model, dict) for ffn_model in ffn_models):
         chunk_state = state[0] if isinstance(state, list) else state
-        output = ffn_models[0][infer_func_name].predict(inputs, chunk_state)
+        output = _predict_chunk(ffn_models[0], infer_func_name, inputs, chunk_state)
         inputs['hidden_states'] = output['output_hidden_states']
 
         chunk_state = state[1] if isinstance(state, list) else state
-        output = ffn_models[1][infer_func_name].predict(inputs, chunk_state)
+        output = _predict_chunk(ffn_models[1], infer_func_name, inputs, chunk_state)
         inputs['hidden_states'] = output['output_hidden_states']
 
         chunk_state = state[2] if isinstance(state, list) else state
-        output = ffn_models[2][infer_func_name].predict(inputs, chunk_state)
+        output = _predict_chunk(ffn_models[2], infer_func_name, inputs, chunk_state)
         inputs['hidden_states'] = output['output_hidden_states']
 
         chunk_state = state[3] if isinstance(state, list) else state
-        output = ffn_models[3][infer_func_name].predict(inputs, chunk_state)
+        output = _predict_chunk(ffn_models[3], infer_func_name, inputs, chunk_state)
         inputs['hidden_states'] = output['output_hidden_states']
     else:
         for chunk_idx in range(len(ffn_models)):
             ffn_model = ffn_models[chunk_idx]
             if isinstance(ffn_model, dict):
                 chunk_state = state[chunk_idx] if isinstance(state, list) else state
-                output = ffn_model[infer_func_name].predict(inputs, chunk_state)
+                output = _predict_chunk(ffn_model, infer_func_name, inputs, chunk_state)
                 inputs['hidden_states'] = output['output_hidden_states']
 
 
@@ -1121,7 +1165,7 @@ def run_prefill(embed_model, ffn_models, input_ids, current_pos, context_length,
                     }
                     update_mask = make_update_mask(mask_len, batch_pos, batch_size) if use_update_mask else None
                     chunk_state = state[chunk_idx] if isinstance(state, list) else state
-                    output = _predict_with_optional_update_mask(ffn_model[prefill_func_name], inputs, chunk_state, update_mask)
+                    output = _predict_chunk(ffn_model, prefill_func_name, inputs, chunk_state, update_mask=update_mask)
                     hidden_states = output['output_hidden_states']
 
             batch_pos = batch_end
@@ -1178,15 +1222,8 @@ def generate_next_token(embed_model, ffn_models, lmhead_model, input_ids, pos, c
                 'causal_mask': single_causal_mask.numpy(),
                 'current_pos': position_ids.numpy()
             }
-            # Add update_mask only if model expects it (older models)
-            try:
-                model_inputs = {inp.name for inp in ffn_model[infer_func_name].get_spec().description.input}
-            except Exception:
-                model_inputs = set()
-            if 'update_mask' in model_inputs:
-                inputs['update_mask'] = update_mask.numpy()
             chunk_state = state[chunk_idx] if isinstance(state, list) else state
-            output = ffn_model[infer_func_name].predict(inputs, chunk_state)
+            output = _predict_chunk(ffn_model, infer_func_name, inputs, chunk_state, update_mask=update_mask.numpy())
             hidden_states = output['output_hidden_states']
     
     # Run LM head and get next token
@@ -1268,10 +1305,14 @@ def create_unified_state(ffn_models, context_length):
     if isinstance(ffn_models[0], dict):
         if ffn_models[0].get('_state_mode') == 'local':
             states = [chunk['infer'].make_state() for chunk in ffn_models]
+            # Initialize per-chunk linear attention states (if model uses them)
+            _init_linear_states_for_chunks(ffn_models)
             print(f"\nCreated per-chunk transformer states for {len(ffn_models)} chunks")
             return states
         # Use first FFN model's prefill function to create state
         state = ffn_models[0]['prefill'].make_state()
+        # Also initialize linear states for non-local-state chunked models
+        _init_linear_states_for_chunks(ffn_models)
         print(f"\nCreated unified transformer state for {len(ffn_models)} chunks")
         return state
     else:

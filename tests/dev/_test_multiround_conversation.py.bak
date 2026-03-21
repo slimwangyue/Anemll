@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+"""Multi-round conversation validation for Qwen3.5-4B with stateless linear attention.
+
+Tests that multi-turn conversation works correctly by comparing:
+  1. PyTorch reference (gold standard)
+  2. CoreML with separate decode models
+  3. CoreML with combined dedup models (if available)
+
+Each configuration runs the same 3-turn conversation:
+  Turn 1: "What is a stack in computer science?"
+  Turn 2: "How does it compare to a queue?"
+  Turn 3: "Give me a Python example of each."
+
+Validates:
+  - Cross-turn coherence (does Turn 2 reference Turn 1?)
+  - Token match rate vs PyTorch per turn
+  - Linear state accumulation vs reset between turns
+  - KV cache re-prefill correctness
+
+Usage:
+    python tests/dev/_test_multiround_conversation.py --tokens 40
+    python tests/dev/_test_multiround_conversation.py --tokens 40 --skip-export
+    python tests/dev/_test_multiround_conversation.py --tokens 40 --export-dir /tmp/lut_vs_nolut_export
+"""
+import sys
+sys.path.insert(0, "/Users/yw68/Anemll")
+import os, gc, time, argparse, copy
+import numpy as np
+import torch
+import coremltools as ct
+from anemll.models.qwen3_5_model import (
+    Qwen35ForCausalLM, Qwen35Config, ane_conv_state_shape,
+    MODEL_DTYPE, TEST_DEVICE,
+)
+from anemll.ane_converter.qwen3_5_converter import Qwen35Converter
+from transformers import AutoTokenizer
+
+MODEL_PATH = "/Users/yw68/local_llm/models/Qwen__Qwen3.5-4B"
+CTX = 256
+NUM_CHUNKS = 4
+CHUNKS = [(0, 8), (8, 16), (16, 24), (24, 32)]
+LAYERS_PER_CHUNK = 8
+
+CONVERSATION_TURNS = [
+    "What is a stack in computer science?",
+    "How does it compare to a queue?",
+    "Give me a Python example of each.",
+]
+
+
+# ─── PyTorch Multi-Round ────────────────────────────────────────────────
+
+def pytorch_multiround(model, cfg, tokenizer, turns, max_gen):
+    """Run multi-round conversation with PyTorch, re-encoding full history each turn."""
+    ane_d1, ane_d2 = ane_conv_state_shape(
+        cfg.text_config.linear_num_key_heads * cfg.text_config.linear_key_head_dim * 2
+        + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim,
+        max(1, int(cfg.text_config.linear_conv_kernel_dim)))
+
+    conversation = []
+    results = []
+
+    for turn_idx, user_msg in enumerate(turns):
+        print(f"\n  PyTorch Turn {turn_idx+1}: {user_msg[:60]}")
+        conversation.append({"role": "user", "content": user_msg})
+
+        # Tokenize full conversation history
+        tpl_out = tokenizer.apply_chat_template(
+            conversation, return_tensors="pt", add_generation_prompt=True
+        )
+        if hasattr(tpl_out, 'input_ids'):
+            input_ids = tpl_out.input_ids
+        elif isinstance(tpl_out, torch.Tensor):
+            input_ids = tpl_out
+        else:
+            input_ids = torch.tensor(tpl_out)
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        input_ids = input_ids.to(torch.int32)
+
+        prompt_len = input_ids.shape[1]
+        if prompt_len + max_gen > CTX:
+            # Truncate from left
+            input_ids = input_ids[:, -(CTX - max_gen):]
+            prompt_len = input_ids.shape[1]
+
+        # Fresh states for each turn (re-prefill from scratch)
+        pt_k = [torch.zeros(LAYERS_PER_CHUNK, cfg.num_key_value_heads, CTX, cfg.head_dim, dtype=MODEL_DTYPE)
+                for _ in range(NUM_CHUNKS)]
+        pt_v = [torch.zeros(LAYERS_PER_CHUNK, cfg.num_key_value_heads, CTX, cfg.head_dim, dtype=MODEL_DTYPE)
+                for _ in range(NUM_CHUNKS)]
+        pt_c = [torch.zeros(LAYERS_PER_CHUNK, ane_d1, ane_d2, dtype=MODEL_DTYPE)
+                for _ in range(NUM_CHUNKS)]
+        pt_r = [torch.zeros(LAYERS_PER_CHUNK, cfg.text_config.linear_num_value_heads,
+                            cfg.text_config.linear_key_head_dim,
+                            cfg.text_config.linear_value_head_dim, dtype=MODEL_DTYPE)
+                for _ in range(NUM_CHUNKS)]
+
+        tokens = []
+        with torch.no_grad():
+            t0 = time.time()
+            # Prefill all history tokens
+            for pos in range(prompt_len):
+                tok = input_ids[:, pos:pos+1].to(torch.int32)
+                hidden = model.model.embed_tokens(tok).to(MODEL_DTYPE)
+                mask = torch.full((1, 1, 1, CTX), float("-inf"), dtype=MODEL_DTYPE)
+                mask[:, :, :, :pos+1] = 0
+                for ci, (s, e) in enumerate(CHUNKS):
+                    hidden = model.model.process_layers_regular_single_token_export_local_state(
+                        hidden_states=hidden, position_ids=torch.tensor([pos], dtype=torch.int32),
+                        causal_mask=mask, current_pos=torch.tensor([pos], dtype=torch.int32),
+                        kv_cache_0=None, k_cache=pt_k[ci], v_cache=pt_v[ci],
+                        linear_conv_state=pt_c[ci], linear_recurrent_state=pt_r[ci],
+                        start_layer=s, end_layer=e, apply_final_norm=(ci == NUM_CHUNKS - 1))
+            logits = model.lm_head(hidden.permute(0, 2, 1).unsqueeze(2)).squeeze(2).permute(0, 2, 1)
+            next_id = torch.argmax(logits, dim=-1).to(torch.int32)
+            tokens.append(next_id.item())
+            t_prefill = time.time() - t0
+
+            # Decode
+            t_dec = time.time()
+            for gi in range(max_gen - 1):
+                pos = prompt_len + gi
+                hidden = model.model.embed_tokens(next_id).to(MODEL_DTYPE)
+                mask = torch.full((1, 1, 1, CTX), float("-inf"), dtype=MODEL_DTYPE)
+                mask[:, :, :, :pos+1] = 0
+                for ci, (s, e) in enumerate(CHUNKS):
+                    hidden = model.model.process_layers_regular_single_token_export_local_state(
+                        hidden_states=hidden, position_ids=torch.tensor([pos], dtype=torch.int32),
+                        causal_mask=mask, current_pos=torch.tensor([pos], dtype=torch.int32),
+                        kv_cache_0=None, k_cache=pt_k[ci], v_cache=pt_v[ci],
+                        linear_conv_state=pt_c[ci], linear_recurrent_state=pt_r[ci],
+                        start_layer=s, end_layer=e, apply_final_norm=(ci == NUM_CHUNKS - 1))
+                logits = model.lm_head(hidden.permute(0, 2, 1).unsqueeze(2)).squeeze(2).permute(0, 2, 1)
+                next_id = torch.argmax(logits, dim=-1).to(torch.int32)
+                tokens.append(next_id.item())
+            t_decode = time.time() - t_dec
+
+        response_text = tokenizer.decode(tokens, skip_special_tokens=True)
+        conversation.append({"role": "assistant", "content": response_text})
+        results.append({
+            'turn': turn_idx + 1,
+            'prompt_len': prompt_len,
+            'tokens': tokens,
+            'text': response_text,
+            'prefill_ms': t_prefill * 1000,
+            'decode_ms': t_decode * 1000,
+        })
+        print(f"    [{prompt_len} tok prompt] {response_text[:100]}")
+
+    return results
+
+
+# ─── CoreML Multi-Round ────────────────────────────────────────────────
+
+def coreml_multiround(out_dir, label, tokenizer, turns, max_gen, compute_unit,
+                      combined_dir=None, reset_linear_states=True):
+    """Run multi-round conversation with CoreML models.
+    
+    Args:
+        out_dir: Directory with embeddings, lm_head
+        label: "LUT4" or "fp16"
+        combined_dir: If set, load combined multifunction models from here (function_name='infer')
+        reset_linear_states: If True, reset linear states between turns (fresh re-prefill).
+                             If False, carry linear states across turns.
+    """
+    embed = ct.models.MLModel(os.path.join(out_dir, "embeddings.mlpackage"), compute_units=compute_unit)
+    lmhead = ct.models.MLModel(os.path.join(out_dir, "lm_head.mlpackage"), compute_units=compute_unit)
+
+    ffns = []
+    for ci in range(NUM_CHUNKS):
+        if combined_dir:
+            m = ct.models.MLModel(os.path.join(combined_dir, f"chunk{ci}.mlpackage"),
+                                  compute_units=compute_unit, function_name="infer")
+        else:
+            m = ct.models.MLModel(os.path.join(out_dir, f"ffn_{label}_chunk{ci}.mlpackage"),
+                                  compute_units=compute_unit)
+        ffns.append(m)
+
+    # Probe linear state shapes
+    spec = ffns[0].get_spec()
+    inp_map = {}
+    for inp in spec.description.input:
+        try:
+            inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
+        except Exception:
+            pass
+    has_linear = 'linear_conv_state' in inp_map
+
+    def make_fresh_states():
+        """Create fresh KV cache states and zero linear states."""
+        s = [m.make_state() for m in ffns]
+        if has_linear:
+            lc = [np.zeros(inp_map['linear_conv_state'], dtype=np.float16) for _ in range(NUM_CHUNKS)]
+            lr = [np.zeros(inp_map['linear_recurrent_state'], dtype=np.float16) for _ in range(NUM_CHUNKS)]
+        else:
+            lc = [None] * NUM_CHUNKS
+            lr = [None] * NUM_CHUNKS
+        return s, lc, lr
+
+    conversation = []
+    results = []
+
+    # Initial states
+    states, lin_convs, lin_recs = make_fresh_states()
+
+    for turn_idx, user_msg in enumerate(turns):
+        tag = "reset" if reset_linear_states else "carry"
+        print(f"\n  CoreML Turn {turn_idx+1} ({tag}): {user_msg[:60]}")
+        conversation.append({"role": "user", "content": user_msg})
+
+        # Tokenize full conversation
+        tpl_out = tokenizer.apply_chat_template(
+            conversation, return_tensors="pt", add_generation_prompt=True
+        )
+        if hasattr(tpl_out, 'input_ids'):
+            input_ids = tpl_out.input_ids
+        elif isinstance(tpl_out, torch.Tensor):
+            input_ids = tpl_out
+        else:
+            input_ids = torch.tensor(tpl_out)
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        input_ids = input_ids.to(torch.int32)
+
+        prompt_len = input_ids.shape[1]
+        if prompt_len + max_gen > CTX:
+            input_ids = input_ids[:, -(CTX - max_gen):]
+            prompt_len = input_ids.shape[1]
+
+        # Reset states for fresh re-prefill
+        states = [m.make_state() for m in ffns]  # Always reset KV cache
+        if reset_linear_states:
+            _, lin_convs, lin_recs = make_fresh_states()
+        # else: carry linear states from previous turn
+
+        tokens = []
+        t0 = time.time()
+        # Prefill
+        for pos in range(prompt_len):
+            tok = input_ids[:, pos:pos+1].numpy().astype(np.int32)
+            hidden = list(embed.predict({"input_ids": tok}).values())[0]
+            mask = np.full((1, 1, 1, CTX), -65504.0, dtype=np.float16)
+            mask[:, :, :, :pos+1] = 0
+            for ci in range(NUM_CHUNKS):
+                inp = {
+                    "hidden_states": hidden.astype(np.float16),
+                    "position_ids": np.array([pos], dtype=np.int32),
+                    "causal_mask": mask,
+                    "current_pos": np.array([pos], dtype=np.int32),
+                }
+                if lin_convs[ci] is not None:
+                    inp["linear_conv_state"] = lin_convs[ci]
+                    inp["linear_recurrent_state"] = lin_recs[ci]
+                out = ffns[ci].predict(inp, state=states[ci])
+                hidden = out["output_hidden_states"]
+                if 'linear_conv_state_out' in out:
+                    lin_convs[ci] = out['linear_conv_state_out']
+                    lin_recs[ci] = out['linear_recurrent_state_out']
+
+        lm_out = lmhead.predict({"hidden_states": hidden.astype(np.float16)})
+        next_id = int(np.argmax(lm_out["logits"].flatten())) if "logits" in lm_out else int(lm_out["argmax_idx"].flatten()[0])
+        tokens.append(next_id)
+        t_prefill = time.time() - t0
+
+        # Decode
+        t_dec = time.time()
+        for gi in range(max_gen - 1):
+            pos = prompt_len + gi
+            tok = np.array([[next_id]], dtype=np.int32)
+            hidden = list(embed.predict({"input_ids": tok}).values())[0]
+            mask = np.full((1, 1, 1, CTX), -65504.0, dtype=np.float16)
+            mask[:, :, :, :pos+1] = 0
+            for ci in range(NUM_CHUNKS):
+                inp = {
+                    "hidden_states": hidden.astype(np.float16),
+                    "position_ids": np.array([pos], dtype=np.int32),
+                    "causal_mask": mask,
+                    "current_pos": np.array([pos], dtype=np.int32),
+                }
+                if lin_convs[ci] is not None:
+                    inp["linear_conv_state"] = lin_convs[ci]
+                    inp["linear_recurrent_state"] = lin_recs[ci]
+                out = ffns[ci].predict(inp, state=states[ci])
+                hidden = out["output_hidden_states"]
+                if 'linear_conv_state_out' in out:
+                    lin_convs[ci] = out['linear_conv_state_out']
+                    lin_recs[ci] = out['linear_recurrent_state_out']
+            lm_out = lmhead.predict({"hidden_states": hidden.astype(np.float16)})
+            next_id = int(np.argmax(lm_out["logits"].flatten())) if "logits" in lm_out else int(lm_out["argmax_idx"].flatten()[0])
+            tokens.append(next_id)
+        t_decode = time.time() - t_dec
+
+        response_text = tokenizer.decode(tokens, skip_special_tokens=True)
+        conversation.append({"role": "assistant", "content": response_text})
+        results.append({
+            'turn': turn_idx + 1,
+            'prompt_len': prompt_len,
+            'tokens': tokens,
+            'text': response_text,
+            'prefill_ms': t_prefill * 1000,
+            'decode_ms': t_decode * 1000,
+        })
+        print(f"    [{prompt_len} tok prompt] {response_text[:100]}")
+
+    # Cleanup
+    del embed, lmhead
+    for m in ffns:
+        del m
+    gc.collect()
+    return results
+
+
+# ─── Comparison ────────────────────────────────────────────────────────
+
+def compare_results(ref_name, ref_results, configs):
+    """Print comparison table across all configs vs reference."""
+    num_turns = len(ref_results)
+
+    print(f"\n{'='*80}")
+    print(f"  MULTI-ROUND CONVERSATION RESULTS")
+    print(f"{'='*80}")
+
+    # Per-turn comparison
+    for ti in range(num_turns):
+        ref = ref_results[ti]
+        print(f"\n  ── Turn {ti+1} (prompt: {ref['prompt_len']} tokens) ──")
+        print(f"    {'Config':<35} {'Prefill(ms)':>11} {'Decode(ms)':>11} {'Match':>8}")
+        print(f"    {'-'*67}")
+        print(f"    {ref_name:<35} {ref['prefill_ms']:>11.0f} {ref['decode_ms']:>11.0f} {'---':>8}")
+        for cname, cresults in configs:
+            cr = cresults[ti]
+            matches = sum(1 for a, b in zip(ref['tokens'], cr['tokens']) if a == b)
+            total = min(len(ref['tokens']), len(cr['tokens']))
+            pct = 100 * matches / total if total > 0 else 0
+            print(f"    {cname:<35} {cr['prefill_ms']:>11.0f} {cr['decode_ms']:>11.0f} {matches}/{total} ({pct:.0f}%)")
+
+    # Cross-config token match (configs vs each other)
+    if len(configs) >= 2:
+        print(f"\n  ── Cross-Config Token Match ──")
+        for ti in range(num_turns):
+            print(f"    Turn {ti+1}:")
+            for i, (n1, r1) in enumerate(configs):
+                for j, (n2, r2) in enumerate(configs):
+                    if j <= i:
+                        continue
+                    matches = sum(1 for a, b in zip(r1[ti]['tokens'], r2[ti]['tokens']) if a == b)
+                    total = min(len(r1[ti]['tokens']), len(r2[ti]['tokens']))
+                    pct = 100 * matches / total if total > 0 else 0
+                    print(f"      {n1} vs {n2}: {matches}/{total} ({pct:.0f}%)")
+
+    # Generated text summary
+    print(f"\n{'='*80}")
+    print(f"  GENERATED TEXT")
+    print(f"{'='*80}")
+    for ti in range(num_turns):
+        print(f"\n  ── Turn {ti+1} ──")
+        print(f"    User: {CONVERSATION_TURNS[ti]}")
+        print(f"\n    [{ref_name}]")
+        print(f"    {ref_results[ti]['text'][:200]}")
+        for cname, cresults in configs:
+            print(f"\n    [{cname}]")
+            print(f"    {cresults[ti]['text'][:200]}")
+
+
+# ─── Export ────────────────────────────────────────────────────────────
+
+def export_if_needed(model, cfg, out_dir, lut_bits):
+    """Export decode models if not already present."""
+    label = f"LUT{lut_bits}" if lut_bits else "fp16"
+
+    # Embeddings
+    embed_path = os.path.join(out_dir, "embeddings.mlpackage")
+    if not os.path.exists(embed_path):
+        print("  Exporting embeddings...")
+        conv = Qwen35Converter(model, context_length=CTX, batch_size=1,
+                               num_chunks=NUM_CHUNKS, lut_bits=None)
+        ml = conv.convert_part_1(model)
+        ml.save(embed_path)
+        del ml, conv; gc.collect()
+
+    # LM head
+    lmhead_path = os.path.join(out_dir, "lm_head.mlpackage")
+    if not os.path.exists(lmhead_path):
+        print("  Exporting lm_head...")
+        conv = Qwen35Converter(model, context_length=CTX, batch_size=1,
+                               num_chunks=NUM_CHUNKS, lut_bits=None)
+        ml = conv.convert_part_3(model, argmax_in_model=False)
+        ml.save(lmhead_path)
+        del ml, conv; gc.collect()
+
+    # FFN chunks
+    for ci in range(NUM_CHUNKS):
+        chunk_path = os.path.join(out_dir, f"ffn_{label}_chunk{ci}.mlpackage")
+        if not os.path.exists(chunk_path):
+            t0 = time.time()
+            print(f"  Exporting decode chunk {ci} ({label})...")
+            conv = Qwen35Converter(model, context_length=CTX, batch_size=1,
+                                   num_chunks=NUM_CHUNKS, lut_bits=lut_bits,
+                                   per_channel=8)
+            ml = conv.convert_part_2(model, chunk_idx=ci, total_chunks=NUM_CHUNKS)
+            ml.save(chunk_path)
+            del ml, conv; gc.collect()
+            print(f"    Done ({time.time()-t0:.1f}s)")
+        else:
+            print(f"  Chunk {ci} exists, skipping.")
+
+
+# ─── Main ──────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tokens", type=int, default=40, help="Tokens to generate per turn")
+    parser.add_argument("--export-dir", type=str, default="/tmp/lut_vs_nolut_export",
+                        help="Directory with exported models (reuse from previous test)")
+    parser.add_argument("--skip-export", action="store_true", help="Skip export, use existing models")
+    parser.add_argument("--skip-pytorch", action="store_true", help="Skip PyTorch reference")
+    parser.add_argument("--lut", type=int, default=4, help="LUT bits (4 or None)")
+    parser.add_argument("--dedup-dir", type=str, default=None,
+                        help="Path to combined dedup models (from dedup comparison test)")
+    args = parser.parse_args()
+
+    max_gen = args.tokens
+    out_dir = args.export_dir
+    lut_bits = args.lut
+    label = f"LUT{lut_bits}" if lut_bits else "fp16"
+    compute_unit = ct.ComputeUnit.CPU_AND_NE
+    os.makedirs(out_dir, exist_ok=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_fast=False)
+
+    print("=" * 80)
+    print("  Multi-Round Conversation Validation — Qwen3.5-4B Stateless")
+    print(f"  Config: {label}, {NUM_CHUNKS} chunks, CTX={CTX}")
+    print(f"  Generating {max_gen} tokens per turn, {len(CONVERSATION_TURNS)} turns")
+    print("=" * 80)
+
+    # Load model
+    cfg = Qwen35Config.from_json(os.path.join(MODEL_PATH, "config.json"))
+    cfg.context_length = CTX
+    cfg.state_length = CTX
+
+    model = None
+    if not args.skip_export or not args.skip_pytorch:
+        model = Qwen35ForCausalLM(cfg)
+        assert model.load_pretrained_weights(MODEL_PATH)
+        model.eval()
+        for p in model.parameters():
+            p.requires_grad = False
+
+    # Export if needed
+    if not args.skip_export:
+        export_if_needed(model, cfg, out_dir, lut_bits)
+
+    all_configs = []
+
+    # ── 1. PyTorch Reference ──
+    if not args.skip_pytorch:
+        print(f"\n{'='*60}")
+        print("  PyTorch Reference (multi-round)")
+        print(f"{'='*60}")
+        pt_results = pytorch_multiround(model, cfg, tokenizer, CONVERSATION_TURNS, max_gen)
+    else:
+        pt_results = None
+
+    if model is not None:
+        del model
+        gc.collect()
+
+    # ── 2. CoreML Separate (reset linear states each turn) ──
+    print(f"\n{'='*60}")
+    print(f"  CoreML Separate {label} (reset linear states each turn)")
+    print(f"{'='*60}")
+    cml_reset = coreml_multiround(
+        out_dir, label, tokenizer, CONVERSATION_TURNS, max_gen, compute_unit,
+        reset_linear_states=True)
+    all_configs.append((f"CoreML {label} (reset)", cml_reset))
+
+    # ── 3. CoreML Separate (carry linear states across turns) ──
+    print(f"\n{'='*60}")
+    print(f"  CoreML Separate {label} (carry linear states across turns)")
+    print(f"{'='*60}")
+    cml_carry = coreml_multiround(
+        out_dir, label, tokenizer, CONVERSATION_TURNS, max_gen, compute_unit,
+        reset_linear_states=False)
+    all_configs.append((f"CoreML {label} (carry)", cml_carry))
+
+    # ── 4. CoreML Combined Dedup (if available) ──
+    dedup_dir = args.dedup_dir
+    if dedup_dir is None:
+        # Try default location from dedup comparison test
+        candidate = os.path.join("/tmp/dedup_comparison", f"combined_{label}_dedup")
+        if os.path.exists(candidate):
+            dedup_dir = candidate
+    if dedup_dir and os.path.exists(dedup_dir):
+        print(f"\n{'='*60}")
+        print(f"  CoreML Combined Dedup {label} (reset linear states)")
+        print(f"{'='*60}")
+        cml_dedup = coreml_multiround(
+            out_dir, label, tokenizer, CONVERSATION_TURNS, max_gen, compute_unit,
+            combined_dir=dedup_dir, reset_linear_states=True)
+        all_configs.append((f"CoreML Dedup {label}", cml_dedup))
+    else:
+        print(f"\n  Dedup models not found, skipping. (Use --dedup-dir or run dedup comparison first)")
+
+    # ── 5. Summary ──
+    if pt_results:
+        compare_results("PyTorch", pt_results, all_configs)
+    elif all_configs:
+        # Use first CoreML config as reference
+        ref_name, ref_results = all_configs[0]
+        compare_results(ref_name, ref_results, all_configs[1:])
+
+    # ── 6. Reset vs Carry analysis ──
+    print(f"\n{'='*80}")
+    print("  LINEAR STATE RESET vs CARRY ANALYSIS")
+    print(f"{'='*80}")
+    for ti in range(len(CONVERSATION_TURNS)):
+        reset_toks = cml_reset[ti]['tokens']
+        carry_toks = cml_carry[ti]['tokens']
+        matches = sum(1 for a, b in zip(reset_toks, carry_toks) if a == b)
+        total = min(len(reset_toks), len(carry_toks))
+        pct = 100 * matches / total if total > 0 else 0
+        print(f"  Turn {ti+1}: reset vs carry = {matches}/{total} ({pct:.0f}%) token match")
+        if pct < 100:
+            # Show first divergence
+            for pos, (a, b) in enumerate(zip(reset_toks, carry_toks)):
+                if a != b:
+                    print(f"    First divergence at token {pos}: "
+                          f"reset={tokenizer.decode([a])} ({a}) vs carry={tokenizer.decode([b])} ({b})")
+                    break
+
+    print(f"\n  Interpretation:")
+    all_match = all(
+        sum(1 for a, b in zip(cml_reset[ti]['tokens'], cml_carry[ti]['tokens']) if a == b)
+        == min(len(cml_reset[ti]['tokens']), len(cml_carry[ti]['tokens']))
+        for ti in range(len(CONVERSATION_TURNS))
+    )
+    if all_match:
+        print("  ✓ Reset and carry produce identical tokens across all turns.")
+        print("    → Linear states are effectively re-computed during prefill.")
+    else:
+        t1_match = (sum(1 for a, b in zip(cml_reset[0]['tokens'], cml_carry[0]['tokens']) if a == b)
+                    == min(len(cml_reset[0]['tokens']), len(cml_carry[0]['tokens'])))
+        if t1_match:
+            print("  → Turn 1 matches (expected — no prior state).")
+            print("  → Later turns diverge — stale linear states from previous turns affect output.")
+            print("  → RECOMMENDATION: Reset linear states between turns for correctness.")
+        else:
+            print("  → Even Turn 1 diverges — unexpected, may indicate a bug.")
+
+    print(f"\nDone. Export dir: {out_dir}")
+
+
+if __name__ == "__main__":
+    main()

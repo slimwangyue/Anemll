@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4-chunk prefill parity: export all chunks (batch=1, ctx=256), PyTorch ref, ANE compare.
+"""4-chunk prefill parity: export all chunks (batch=256, ctx=1024), PyTorch ref, ANE compare.
 
 Usage:
     python tests/dev/_prefill_4chunk_parity.py
@@ -19,8 +19,8 @@ from transformers import AutoTokenizer
 
 MODEL_PATH = "/Users/yw68/local_llm/models/Qwen__Qwen3.5-4B"
 OUT_DIR = "/tmp/qwen35_4chunk_parity"
-BATCH = 1        # seq_len per prefill call
-CTX = 256        # context / state length
+BATCH = 256      # seq_len per prefill call
+CTX = 1024       # context / state length
 NUM_CHUNKS = 4
 CHUNKS = [(0, 8), (8, 16), (16, 24), (24, 32)]
 
@@ -49,11 +49,15 @@ print(f"  conv_state ANE shape=({ane_d1},{ane_d2})  [orig ({conv_dim},{conv_kern
 
 # ── 2. Tokenize ────────────────────────────────────────────────
 tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_fast=False)
-prompt = "Explain stack and heap memory in one paragraph."
-ids = tokenizer(prompt, return_tensors="pt", add_special_tokens=True).input_ids
-if ids.shape[1] < BATCH:
-    ids = torch.cat([ids, ids[:, :BATCH - ids.shape[1]]], dim=1)
-ids = ids[:, :BATCH].to(torch.int32)
+prompt = "Explain stack and heap memory in one paragraph and give one debugging tip."
+text = prompt
+while True:
+    ids = tokenizer(text, return_tensors="pt", add_special_tokens=True).input_ids
+    if ids.shape[1] >= BATCH:
+        ids = ids[:, :BATCH]
+        break
+    text = text + " " + prompt
+ids = ids.to(torch.int32)
 print(f"  input_ids: {ids.shape}  tokens: {ids[0,:6].tolist()} …")
 
 # ── 3. PyTorch references (cascaded through all 4 chunks) ─────
@@ -197,33 +201,30 @@ for ci, (s, e) in enumerate(CHUNKS):
 del model, hidden, embed
 gc.collect()
 
-# ── 5. ANE parity comparison ──────────────────────────────────
+# ── 5. ANE parity comparison (CASCADED) ───────────────────────
 print("\n" + "=" * 60)
-print("PHASE 2: ANE parity comparison")
+print("PHASE 2: ANE parity comparison (CASCADED)")
 print("=" * 60)
+print("Each chunk receives the CoreML output of the previous chunk.")
 
 embed_np = np.load(os.path.join(OUT_DIR, "embed.npy"))
 summary = []
+prev_cml_hidden = embed_np.copy()  # chunk 1 input = embed
 
 for ci in range(NUM_CHUNKS):
     s, e = CHUNKS[ci]
     pkg = os.path.join(OUT_DIR, f"chunk{ci+1}.mlpackage")
     torch_ref = np.load(os.path.join(OUT_DIR, f"torch_chunk{ci+1}.npy"))
 
-    # Input: embed for chunk 1, else PyTorch output from previous chunk
-    if ci == 0:
-        inp_hidden = embed_np.copy()
-    else:
-        inp_hidden = np.load(os.path.join(OUT_DIR, f"torch_chunk{ci}.npy"))
-
     print(f"\n--- Chunk {ci+1} (layers {s}-{e-1}) ---")
+    print(f"  Input: {'embed' if ci == 0 else f'CoreML chunk {ci} output'}  shape={prev_cml_hidden.shape}")
     t0 = time.time()
     cml = ct.models.MLModel(pkg, compute_units=ct.ComputeUnit.CPU_AND_NE)
     print(f"  Loaded in {time.time()-t0:.1f}s")
     state = cml.make_state()
 
     inp = {
-        "hidden_states": inp_hidden.astype(np.float16),
+        "hidden_states": prev_cml_hidden.astype(np.float16),
         "position_ids": np.arange(BATCH, dtype=np.int32),
         "causal_mask": causal_mask.numpy(),
         "current_pos": np.zeros((1,), dtype=np.int32),
@@ -240,6 +241,9 @@ for ci in range(NUM_CHUNKS):
         del cml
         gc.collect()
         continue
+
+    # Feed this output to the next chunk
+    prev_cml_hidden = cml_out.copy()
 
     # Compare shapes — handle last-chunk slice if needed
     ref = torch_ref
@@ -270,7 +274,7 @@ for ci in range(NUM_CHUNKS):
         pos = np.unravel_index(w, diff.shape)
         print(f"    worst: pos={pos} ref={ref_f[pos]:.6f} cml={cml_f[pos]:.6f} diff={diff[pos]:.6f}")
 
-    np.save(os.path.join(OUT_DIR, f"cml_chunk{ci+1}.npy"), cml_out)
+    np.save(os.path.join(OUT_DIR, f"cml_cas_chunk{ci+1}.npy"), cml_out)
     summary.append((ci + 1, "OK", max_abs, mean_abs, cos))
 
     del cml, state, out
@@ -278,7 +282,7 @@ for ci in range(NUM_CHUNKS):
 
 # ── 6. Summary ─────────────────────────────────────────────────
 print(f"\n{'='*64}")
-print(f"  PREFILL PARITY SUMMARY  (batch={BATCH}, ctx={CTX})")
+print(f"  CASCADED PREFILL PARITY  (batch={BATCH}, ctx={CTX})")
 print(f"{'='*64}")
 print(f"  {'Chunk':<8} {'Grade':<14} {'max_abs':<12} {'mean_abs':<14} {'cosine':<15}")
 print(f"  {'-'*60}")
