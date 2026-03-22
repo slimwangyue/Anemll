@@ -259,8 +259,17 @@ def _normalize_key(name: str) -> str:
     return re.sub(r"_(\d+)$", "", name)
 
 
-def _extract_const_weights(prog, func_name: str = "main") -> Dict[str, np.ndarray]:
-    """Extract {normalized_key: numpy_array} for all non-scalar const ops."""
+def _extract_const_weights(prog, func_name: str = "main",
+                           min_size: int = 1024) -> Dict[str, np.ndarray]:
+    """Extract {normalized_key: numpy_array} for model weight const ops.
+
+    Args:
+        min_size: Minimum tensor element count to include. Filters out tiny
+            runtime constants (broadcast scalars, shape arrays, position
+            indices) that MIL optimization passes generate — especially for
+            prefill models where batch-unrolled attention creates thousands
+            of small consts. Default 1024 keeps only actual model weights.
+    """
     weights = {}
     func = prog.functions.get(func_name)
     if func is None:
@@ -274,7 +283,7 @@ def _extract_const_weights(prog, func_name: str = "main") -> Dict[str, np.ndarra
         if val is None:
             continue
         arr = val.val if hasattr(val, "val") else val
-        if isinstance(arr, np.ndarray) and arr.size > 1:
+        if isinstance(arr, np.ndarray) and arr.size >= min_size:
             nk = _normalize_key(op.name)
             weights[nk] = arr
     return weights

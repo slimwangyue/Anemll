@@ -581,6 +581,10 @@ class Qwen35Converter(BaseConverter):
                 self.end_layer = end_layer
                 self.export_seq_len = export_seq_len
                 self.local_num_layers = (end_layer - start_layer) if end_layer is not None else len(model.model.layers)
+                self._is_last_chunk = (
+                    (end_layer is None) or end_layer == len(model.model.layers)
+                )
+                self._hidden_size = model.config.hidden_size
                 cfg = model.config
                 self.register_buffer(
                     "k_cache",
@@ -636,7 +640,7 @@ class Qwen35Converter(BaseConverter):
                 )
 
             def forward(self, hidden_states, position_ids, causal_mask, current_pos,
-                        linear_conv_state, linear_recurrent_state):
+                        linear_conv_state, linear_recurrent_state, valid_len):
                 out = self.model.model.process_layers_prefill_export_local_state(
                     hidden_states=hidden_states,
                     position_ids=position_ids,
@@ -652,9 +656,24 @@ class Qwen35Converter(BaseConverter):
                     apply_final_norm=False,
                     expected_batch_size=1,
                     expected_seq_len=self.export_seq_len,
+                    valid_len=valid_len,
                 )
-                if self.end_layer is None or self.end_layer == len(self.model.model.layers):
-                    return out[:, 0:1, :], linear_conv_state, linear_recurrent_state
+                if self._is_last_chunk:
+                    # Apply final RMSNorm (matches FFN/infer wrapper behavior).
+                    out = self.model.model.norm(out)
+                    # Extract the last valid token's hidden state.
+                    # Use one-hot bmm instead of torch.gather to avoid
+                    # aten::Int / int64 cast issues with coremltools.
+                    # positions: (seq_len,) int32 — static at trace time
+                    # selector: (1, 1, seq_len) float16 — one-hot at valid_len-1
+                    seq_len = self.export_seq_len
+                    positions = torch.arange(
+                        seq_len, device=out.device, dtype=torch.int32)
+                    target = valid_len - 1  # (1,) int32
+                    selector = (positions == target).to(out.dtype)  # (seq_len,)
+                    selector = selector.reshape(1, 1, seq_len)
+                    out = torch.bmm(selector, out)  # (1, 1, hidden)
+                    return out, linear_conv_state, linear_recurrent_state
                 return out, linear_conv_state, linear_recurrent_state
 
         wrapper = PrefillWrapper(model, start_layer, end_layer, self.batch_size).eval()
@@ -677,9 +696,11 @@ class Qwen35Converter(BaseConverter):
             lin_conv = torch.zeros((local_num_layers, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
             lin_rec = torch.zeros((local_num_layers, 1, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
 
+        valid_len = torch.tensor([self.batch_size], dtype=torch.int32, device=TEST_DEVICE)
+
         self._reset_state_buffers(wrapper)
         traced = torch.jit.trace(
-            wrapper, (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec),
+            wrapper, (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec, valid_len),
             check_trace=False,
         )
         self._reset_state_buffers(wrapper)
@@ -694,6 +715,7 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="current_pos", shape=current_pos.shape, dtype=np.int32),
                 ct.TensorType(name="linear_conv_state", shape=lin_conv.shape, dtype=np.float16),
                 ct.TensorType(name="linear_recurrent_state", shape=lin_rec.shape, dtype=np.float16),
+                ct.TensorType(name="valid_len", shape=valid_len.shape, dtype=np.int32),
             ],
             outputs=[
                 ct.TensorType(name="output_hidden_states", dtype=np.float16),

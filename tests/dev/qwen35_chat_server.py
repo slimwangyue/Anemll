@@ -497,7 +497,7 @@ class ChatEngine:
         self.tpl_tokens = {
             "im_start": t.convert_tokens_to_ids("<|im_start|>"),
             "im_end": t.convert_tokens_to_ids("<|im_end|>"),
-            "nl": t.convert_tokens_to_ids("\n"),
+            "nl": t.encode("\n", add_special_tokens=False),  # list of token ids
             "think": t.convert_tokens_to_ids("<think>"),
             "user": t.encode("user", add_special_tokens=False),
             "assistant": t.encode("assistant", add_special_tokens=False),
@@ -601,17 +601,18 @@ class ChatEngine:
         """Build token sequence for a new turn (incremental mode)."""
         t = self.tpl_tokens
         tk = self.tokenizer
+        nl = t["nl"]  # list of token ids
         tokens = []
         if not has_prev_stop:
-            tokens += [t["im_end"], t["nl"]]
+            tokens += [t["im_end"]] + nl
         else:
-            tokens += [t["nl"]]
-        tokens += [t["im_start"]] + t["user"] + [t["nl"]]
+            tokens += nl
+        tokens += [t["im_start"]] + t["user"] + nl
         tokens += tk.encode(user_msg, add_special_tokens=False)
-        tokens += [t["im_end"], t["nl"]]
-        tokens += [t["im_start"]] + t["assistant"] + [t["nl"]]
+        tokens += [t["im_end"]] + nl
+        tokens += [t["im_start"]] + t["assistant"] + nl
         if enable_thinking:
-            tokens += [t["think"], t["nl"]]
+            tokens += [t["think"]] + nl
         return tokens
 
     def chat_stream(self, user_msg, max_tokens=512, enable_thinking=True):

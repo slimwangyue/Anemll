@@ -1,57 +1,81 @@
 #!/usr/bin/env bash
-# Qwen3.5-4B Milestone 1.1 — Full Pipeline
+# Qwen3.5-4B — Full Pipeline (export → combine → compile → validate)
 #
 # Usage:
-#   ./scripts_qwen3_5/run_pipeline.sh
+#   ./scripts_qwen3_5/run_pipeline.sh --model /path/to/Qwen3.5-4B
 #   ./scripts_qwen3_5/run_pipeline.sh --model /path/to/Qwen3.5-4B --output /path/to/output
 #   ./scripts_qwen3_5/run_pipeline.sh --skip-existing
+#
+# Environment variables (optional):
+#   QWEN35_HF_MODEL  — HuggingFace model path
+#   QWEN35_OUTPUT    — Output directory (default: qwen3_5_stable_models/)
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
-MODEL="${MODEL:-/Users/yw68/local_llm/models/Qwen__Qwen3.5-4B}"
-OUTPUT="${OUTPUT:-/Users/yw68/qwen35_milestone1_1}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Defaults come from config.py via env vars; CLI overrides them
+MODEL="${QWEN35_HF_MODEL:-}"
+OUTPUT="${QWEN35_OUTPUT:-$REPO_ROOT/qwen3_5_stable_models}"
 SKIP=""
-HF_PATH="$MODEL"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --model)   MODEL="$2"; HF_PATH="$2"; shift 2 ;;
+    --model)   MODEL="$2"; shift 2 ;;
     --output)  OUTPUT="$2"; shift 2 ;;
     --skip-existing) SKIP="--skip-existing"; shift ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
 
+if [[ -z "$MODEL" ]]; then
+  echo "ERROR: Must provide --model /path/to/Qwen3.5-4B (or set QWEN35_HF_MODEL)"
+  exit 1
+fi
+
+# Export env vars so config.py picks them up
+export QWEN35_HF_MODEL="$MODEL"
+export QWEN35_OUTPUT="$OUTPUT"
+
 echo "======================================================================"
-echo "  Qwen3.5-4B Milestone 1.1 — Full Pipeline"
+echo "  Qwen3.5-4B — Full Pipeline"
 echo "  Model:  $MODEL"
 echo "  Output: $OUTPUT"
 echo "======================================================================"
 
 # Step 1: Export
 echo ""
-echo "── Step 1/4: Export ──"
+echo "── Step 1/5: Export ──"
 python scripts_qwen3_5/export.py --model "$MODEL" --output "$OUTPUT" $SKIP
 
-# Step 2: Combine
+# Step 2: Combine (dedup)
 echo ""
-echo "── Step 2/4: Combine ──"
+echo "── Step 2/5: Combine ──"
 python scripts_qwen3_5/combine.py --input "$OUTPUT" $SKIP
 
 # Step 3: Compile
 echo ""
-echo "── Step 3/4: Compile ──"
+echo "── Step 3/5: Compile ──"
 python scripts_qwen3_5/compile.py --model-dir "$OUTPUT"
 
-# Step 4: Chat server
+# Step 4: Validate
 echo ""
-echo "── Step 4/4: Ready ──"
-echo "All models exported, combined, and compiled."
+echo "── Step 4/5: Validate ──"
+python scripts_qwen3_5/validate.py --model-dir "$OUTPUT" --tokens 40
+
+# Step 5: Done
+echo ""
+echo "── Step 5/5: Ready ──"
+echo "All models exported, combined, compiled, and validated."
 echo ""
 echo "To start the chat server:"
-echo "  python tests/dev/qwen35_chat_server.py --model-dir $OUTPUT --hf-model $HF_PATH"
+echo "  python scripts_qwen3_5/chat_server.py --model-dir $OUTPUT"
 echo ""
-echo "Output directory: $OUTPUT"
-ls -la "$OUTPUT"/*.mlpackage 2>/dev/null | head -20 || true
+echo "To run profiling:"
+echo "  python scripts_qwen3_5/profile.py --export-dir $OUTPUT --skip-cpu-compare"
+echo ""
+echo "Output directory:"
+du -sh "$OUTPUT"/*.mlpackage "$OUTPUT"/combined_LUT4_dedup/*.mlpackage 2>/dev/null | head -20 || true
 echo ""
 echo "Pipeline complete!"

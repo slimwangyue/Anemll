@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 1.2 — Step 2: Combine chunks with ANEMLL-Dedup.
+"""Qwen3.5-4B Milestone 2.0 — Step 2: Combine chunks with ANEMLL-Dedup.
 
 Combines each decode + prefill into a single multi-function .mlpackage
 with shared (deduplicated) weights.
@@ -8,7 +8,14 @@ Usage:
     python scripts_qwen3_5/combine.py --input /path/to/exported
     python scripts_qwen3_5/combine.py --skip-existing
 """
-import os, time, argparse
+import os, time, argparse, sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
+
 from config import BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, DEFAULT_OUTPUT
 from anemll.utils.combine_models import _save_multifunction_dedup
 
@@ -24,7 +31,7 @@ def dir_size_mb(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Combine Qwen3.5-4B chunks (Milestone 1.1)")
+    parser = argparse.ArgumentParser(description="Combine Qwen3.5-4B chunks (Milestone 2.0)")
     parser.add_argument("--input", default=DEFAULT_OUTPUT,
                         help="Directory with exported .mlpackage files")
     parser.add_argument("--skip-existing", action="store_true")
@@ -50,7 +57,7 @@ def main():
         return 1
 
     print("=" * 70)
-    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 1.2")
+    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 2.0")
     print(f"  Functions per chunk: infer + prefill")
     print("=" * 70)
 

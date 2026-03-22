@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 1.2 — Step 1: Export all CoreML model components.
+"""Qwen3.5-4B Milestone 2.0 — Step 1: Export all CoreML model components.
 
 Exports:
   - embeddings (LUT4)             → embeddings.mlpackage
@@ -13,7 +13,14 @@ Usage:
     python scripts_qwen3_5/export.py --model /path/to/Qwen3.5-4B --output /path/to/output
     python scripts_qwen3_5/export.py --skip-existing
 """
-import gc, time, argparse, os
+import gc, time, argparse, os, sys, shutil, glob
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
+
 from config import (
     BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, LM_HEAD_LUT,
     PER_CHANNEL, DEFAULT_HF_MODEL, DEFAULT_OUTPUT,
@@ -85,7 +92,7 @@ def export_ffn_chunks(model, out_dir, skip_existing):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export Qwen3.5-4B for ANE (Milestone 1.1)")
+    parser = argparse.ArgumentParser(description="Export Qwen3.5-4B for ANE (Milestone 2.0)")
     parser.add_argument("--model", default=DEFAULT_HF_MODEL,
                         help="Path to HuggingFace Qwen3.5-4B model directory")
     parser.add_argument("--output", default=DEFAULT_OUTPUT,
@@ -96,7 +103,7 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     print("=" * 70)
-    print("  Qwen3.5-4B ANE Export — Milestone 1.2 (Dynamic KV Slicing)")
+    print("  Qwen3.5-4B ANE Export — Milestone 2.0 (Batch Prefill + valid_len)")
     print(f"  Embed: LUT4 | LM Head: LUT{LM_HEAD_LUT} | FFN: LUT4 × {NUM_CHUNKS} chunks")
     print(f"  Batch: {BATCH_SIZE} | CTX: {CTX}")
     print(f"  Model: {args.model}")
@@ -137,6 +144,19 @@ def main():
             total_mb += sz
             print(f"  {f:<50s} {sz:>8.1f} MB")
     print(f"  {'TOTAL':<50s} {total_mb:>8.1f} MB")
+    # Copy tokenizer files so the output dir is self-contained
+    tok_patterns = ["tokenizer.json", "tokenizer_config.json", "vocab.json",
+                    "merges.txt", "special_tokens_map.json"]
+    copied = []
+    for pat in tok_patterns:
+        for src in glob.glob(os.path.join(args.model, pat)):
+            dst = os.path.join(args.output, os.path.basename(src))
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
+                copied.append(os.path.basename(src))
+    if copied:
+        print(f"  Copied tokenizer files: {', '.join(copied)}")
+
     print(f"\n  Elapsed: {time.time()-t_total:.1f}s")
     print(f"\nNext: python scripts_qwen3_5/combine.py --input {args.output}")
 

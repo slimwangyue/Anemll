@@ -59,3 +59,43 @@ This document summarizes the key requirements and rules collected from previous 
    - Test numerical parity between HF implementation and ANEMLL implementation as part of unit tests.
 
 These guidelines capture the latest requirements for adding Qwen 3 model support while adhering to Apple Neural Engine constraints and avoiding common precision pitfalls.
+
+## Qwen3.5-4B Stable Design (Milestone 1.4)
+
+The following is the validated stable configuration for Qwen3.5-4B on ANE. **Do not change these design choices without running full validation.**
+
+### Quantization Strategy
+| Component | Quantization | Size | Notes |
+|-----------|-------------|------|-------|
+| Embeddings | LUT4, per_channel=8 | 304 MB | Validated 100% match |
+| FFN Chunks (×4 decode + ×4 prefill) | LUT4, per_channel=8 | ~430 MB each | fp16 weights, LUT4 applied |
+| **LM Head** | **LUT6, per_channel=8** | **485 MB** | **Stable default. LUT4 rejected (70% accuracy). fp16 works but 1212 MB.** |
+
+### LM Head Design
+- **LUT6 is the stable default** — validated end-to-end at 9.9 tok/s with correct generation
+- **Argmax fused in model** — outputs `argmax_idx` (int32) + `argmax_val` (fp16) instead of full logits tensor
+- LUT4 LM head was tested and **rejected**: only 70% first-token accuracy
+- fp16 LM head works but is 2.5× larger (1212 MB vs 485 MB)
+- LUT6+argmax latency: 24.9ms (vs 20.1ms fp16) — acceptable tradeoff for 60% size reduction
+
+### ANE Performance
+- Decode throughput: 9.9 tok/s (LUT6+argmax) vs 10.2 tok/s (fp16)
+- 99.7% ops run on ANE
+- No position-dependent slowdown across full context window
+
+### Export Configuration
+```python
+# Stable export config for LM head
+Qwen35Converter(
+    model, context_length=1024, batch_size=256,
+    num_chunks=4, lut_bits=6, per_channel=8,
+    argmax_in_model=True
+)
+converter.convert_part_3(model, argmax_in_model=True)
+```
+
+### Known Issues
+- `convert_part_3` uses `self.lut_bits` (not `self.lut_lmhead_bits`) for quantization — set `lut_bits=6` when exporting LM head only
+- Full model load OOMs on 16GB — use lightweight export script (`tests/dev/qwen35_export_lut6_argmax.py`) that loads only lm_head weight
+- CoreML MIL default pipeline OOMs on 16GB with 248K vocab — use `pass_pipeline=ct.PassPipeline.EMPTY`
+- LUT6 k-means quantization takes ~18 minutes for the 248320×2560 weight matrix

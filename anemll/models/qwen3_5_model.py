@@ -609,13 +609,25 @@ class Qwen35LinearConvStage(nn.Module):
         mixed_qkv_bc1s: torch.Tensor,
         conv_state: torch.Tensor,
         expected_seq_len: int | None = None,
+        valid_len: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.linear_conv_kernel_dim
         seq_len = expected_seq_len if expected_seq_len is not None else mixed_qkv_bc1s.shape[-1]
         stacked = torch.cat([conv_state.to(mixed_qkv_bc1s.dtype).unsqueeze(2), mixed_qkv_bc1s], dim=-1)
         out = self.conv2d(stacked.to(self.conv2d.weight.dtype))
         out = F.silu(out[:, :, :, -seq_len:])
-        next_state = stacked[:, :, :, -k:].squeeze(2)
+        if valid_len is not None:
+            # Extract correct next_state using only valid positions.
+            # stacked layout: [old_conv_state(k), new_input(seq_len)]
+            # Correct last-k is at positions valid_len..valid_len+k-1.
+            # Expand BEFORE int64 cast to avoid aten::Int on (1,) tensors.
+            offsets = torch.arange(k, device=stacked.device, dtype=torch.int32)
+            idx = (valid_len + offsets).reshape(1, 1, 1, k).expand(
+                stacked.shape[0], stacked.shape[1], stacked.shape[2], k
+            ).to(torch.int64)
+            next_state = torch.gather(stacked, dim=3, index=idx).squeeze(2)
+        else:
+            next_state = stacked[:, :, :, -k:].squeeze(2)
         return out.to(mixed_qkv_bc1s.dtype), next_state.to(mixed_qkv_bc1s.dtype)
 
 
@@ -1147,18 +1159,27 @@ class Qwen35LinearAttention(nn.Module):
         recurrent_state: torch.Tensor,
         has_previous_state: bool = True,
         force_fp16_math: bool = False,
+        valid_len: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Fixed-contract prefill path for CoreML export.
 
         This avoids tracing the generic runtime control flow in `_forward_impl`
         so CoreML does not see Python-side `seq_len == 1` or `min(chunk_size, seq_len)`
         decisions for the prefill graph.
+
+        When valid_len is provided (scalar int tensor), only the first valid_len
+        positions carry real tokens; the rest are padding.  Padding tokens are
+        made true no-ops for both conv_state and recurrent_state by:
+          - Extracting the correct conv_state window via gather.
+          - Zeroing key/value/beta/g at padding positions so the chunk
+            delta-rule leaves recurrent_state unchanged through padding.
         """
         bsz = self.export_expected_batch_size
         seq_len = self.export_expected_seq_len
         mixed_qkv_pre, z_cf, b_cf, a_cf = self.proj_stage(hidden_states)
         conv_out_cf, next_conv_state = self.conv_stage(
-            mixed_qkv_pre, conv_state, expected_seq_len=seq_len
+            mixed_qkv_pre, conv_state, expected_seq_len=seq_len,
+            valid_len=valid_len,
         )
         query, key, value, g, beta, z = self.layout_stage(
             conv_out_cf,
@@ -1169,6 +1190,17 @@ class Qwen35LinearAttention(nn.Module):
             seq_len,
             force_fp16_math=force_fp16_math,
         )
+        if valid_len is not None:
+            # Build mask: 1.0 for valid positions, 0.0 for padding.
+            # Shapes — key/value: (B, S, H, D), g/beta: (B, S, H).
+            positions = torch.arange(seq_len, device=key.device, dtype=valid_len.dtype)
+            valid_mask = (positions < valid_len).to(key.dtype)  # (S,)
+            mask_bsh1 = valid_mask.reshape(1, seq_len, 1, 1)    # (1, S, 1, 1)
+            mask_bsh = valid_mask.reshape(1, seq_len, 1)         # (1, S, 1)
+            key = key * mask_bsh1
+            value = value * mask_bsh1
+            beta = beta * mask_bsh
+            g = g * mask_bsh
         out, next_recurrent_state = self.core_norm_stage(
             query=query,
             key=key,
@@ -1279,6 +1311,7 @@ class Qwen35LinearAttention(nn.Module):
         recurrent_state: torch.Tensor,
         has_previous_state: bool = True,
         force_fp16_math: bool = False,
+        valid_len: torch.Tensor | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self._forward_prefill_export_impl(
             hidden_states=hidden_states,
@@ -1286,6 +1319,7 @@ class Qwen35LinearAttention(nn.Module):
             recurrent_state=recurrent_state,
             has_previous_state=has_previous_state,
             force_fp16_math=force_fp16_math,
+            valid_len=valid_len,
         )
 
     def forward(
@@ -1845,8 +1879,15 @@ class Qwen35Model(nn.Module):
         local_num_layers: int,
         expected_batch_size: int | None = None,
         expected_seq_len: int | None = None,
+        valid_len: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Prefill export path using chunk-local state tensors."""
+        """Prefill export path using chunk-local state tensors.
+
+        When valid_len is provided, only the first valid_len positions are
+        real tokens; the rest are padding.  Linear-attention layers use
+        valid_len to keep padding from corrupting conv/recurrent state.
+        Full-attention layers rely on causal_mask to mask padding KV entries.
+        """
         layer = self.layers[layer_idx]
         if layer.layer_type == "linear_attention":
             if linear_conv_state is None or linear_recurrent_state is None:
@@ -1867,6 +1908,7 @@ class Qwen35Model(nn.Module):
                 conv_state=conv_state,
                 recurrent_state=recurrent_state,
                 has_previous_state=True,
+                valid_len=valid_len,
             )
             # Reshape next_conv back to ANE-safe shape before writing.
             ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
@@ -1928,6 +1970,7 @@ class Qwen35Model(nn.Module):
         apply_final_norm: bool = False,
         expected_batch_size: int | None = None,
         expected_seq_len: int | None = None,
+        valid_len: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if end_layer is None:
             end_layer = len(self.layers)
@@ -1948,6 +1991,7 @@ class Qwen35Model(nn.Module):
                 local_num_layers=local_num_layers,
                 expected_batch_size=expected_batch_size,
                 expected_seq_len=expected_seq_len,
+                valid_len=valid_len,
             )
         if apply_final_norm:
             hidden_states = self.norm(hidden_states)

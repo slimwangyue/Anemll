@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 1.1 — Step 3: Compile .mlpackage to .mlmodelc.
+"""Qwen3.5-4B Milestone 2.0 — Step 3: Compile .mlpackage to .mlmodelc.
 
 Usage:
     python scripts_qwen3_5/compile.py --model-dir /path/to/models
     python scripts_qwen3_5/compile.py  # uses default output dir
 """
-import os, glob, time, subprocess, argparse
+import os, glob, time, subprocess, argparse, sys
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
+
 from config import DEFAULT_OUTPUT
 
 
@@ -48,7 +55,7 @@ def main():
     output_dir = args.output or model_dir
 
     print("=" * 70)
-    print("  Qwen3.5-4B Model Compilation — Milestone 1.1")
+    print("  Qwen3.5-4B Model Compilation — Milestone 2.0")
     print(f"  Input:  {model_dir}")
     print(f"  Output: {output_dir}")
     print("=" * 70)
