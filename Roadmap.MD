@@ -11,6 +11,7 @@
 - [X] Gemma3 Architecture Support
 - [x] Monolithic model support ( export_coreml)
 - [x] Profiling/Benchmarking scripts
+- [x] Qwen3.5-4B Milestone 1.3 — Dynamic KV Cache on ANE via tensor-value slice (`current_pos[0]`), 10.5 tok/s, LUT4 quantized
 
 ## In Progress Milestones 🚧
 - [ ] Native ANE Quantization

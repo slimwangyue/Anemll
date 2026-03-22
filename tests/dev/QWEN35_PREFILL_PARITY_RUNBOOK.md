@@ -1393,3 +1393,243 @@ Per-component breakdown (average across 3 turns):
 4. **Stateless linear attention**: Conv/recurrent states as regular I/O tensors instead of CoreML `StateType` — eliminates rounding corruption from CoreML state read/write barriers.
 5. **F.one_hot KV cache writes**: Avoids dynamic `slice_update` trace-time freezing — fully ANE-legal.
 6. **`<think>\n` template continuation**: Prepend `<think>\n` to assistant responses for correct multi-round re-tokenization.
+
+### 14.8 Browser Chat Console
+
+A self-contained browser-based chat interface for interactive testing.
+
+**Script**: `tests/dev/qwen35_chat_server.py`
+
+```bash
+# Start the server (models load in ~60-90s background thread)
+python tests/dev/qwen35_chat_server.py --port 8080
+
+# Custom paths
+python tests/dev/qwen35_chat_server.py \
+  --model-dir /path/to/models \
+  --tokenizer /path/to/Qwen3.5-4B \
+  --port 8080 --ctx 1024
+```
+
+Then open **http://localhost:8080** in a browser.
+
+#### Features
+
+| Feature | Description |
+|---------|-------------|
+| Multi-round conversation | Incremental KV cache — no re-prefill on subsequent turns |
+| Streaming tokens | SSE-based token streaming at ~11 tok/s |
+| Think toggle | Header button switches between thinking mode ON/OFF |
+| Settings panel | Max tokens (default 512), show/hide thinking block |
+| New Chat | Resets all state (KV cache, conversation history, position) |
+| Status bar | Shows CTX position and turn count |
+| Context limit | Warns when context is full; prompts to reset |
+
+#### Architecture
+
+- **Zero extra dependencies** — Python stdlib `http.server` + `ThreadingMixIn`, no Flask/FastAPI
+- **Threaded HTTP server** — status checks don't block during generation
+- **SSE streaming** — `text/event-stream` with `data: {json}\n\n` events:
+  - `token` events: incremental text deltas during generation
+  - `done` event: final stats (decode tokens, elapsed time, end position)
+  - `error` event: context full, prefill failure
+- **Incremental multi-round**: Uses `_build_continuation_tokens()` for turns 2+ (same as validation script), with `<think>\n` injection controlled by the thinking toggle
+- **Think mode OFF**: Skips `<think>\n` template tokens and `enable_thinking=False` in `apply_chat_template`, so the model answers directly without reasoning block
+
+### 14.9 Milestone 1 Optimizations (P0/P1)
+
+Four optimization tasks implemented and evaluated after milestone 1 baseline.
+
+#### 14.9.1 Task 1: Batch Prefill (P0)
+
+**Goal**: Replace token-by-token prefill with batch processing using dedicated prefill models.
+
+**Approach**: Combined dedup models share KV cache state (CoreML StateType) between `infer` (decode) and `prefill` functions. State sharing validated — `make_state()` on either function produces states compatible with both.
+
+**Key Findings**:
+- Prefill models process 256 tokens at once (BATCH_SIZE=256)
+- Prefill always writes KV cache from position 0 (static `key_cache[:, 0:seq_len, :]` for ANE)
+- **Padding corrupts linear attention states** → batch prefill only used when prompt >= BATCH_SIZE (no padding needed)
+- 100% token parity confirmed vs token-by-token baseline
+
+**Performance** (994-token prompt):
+
+| Method | Prefill Time | Throughput |
+|--------|-------------|------------|
+| Sequential (token-by-token) | 90,528 ms | 11 tok/s |
+| Batch (256 batch + 738 seq) | 69,984 ms | 14 tok/s |
+| Batch portion only (256 tokens) | 2,357 ms | **109 tok/s** |
+
+Batch prefill achieves ~10x speedup for the batched portion, ~23% total prefill improvement.
+
+**Limitations**:
+- Batch prefill only processes FIRST 256 tokens (writes from position 0)
+- Combined dedup model loading with `function_name` can fail when disk is low (CoreML cache fills ~80 GB)
+- Separate prefill models work as fallback but have separate states (no KV cache sharing unless combined)
+- Lazy-loaded: prefill models load in background after decode is ready (~80s/chunk)
+
+**Files**:
+- `tests/dev/qwen35_chat_server.py`: Updated with `_batch_prefill()`, `_load_prefill_models()`, combined model support
+- `tests/dev/qwen35_prefill_parity_test.py`: Parity validation script (100% match)
+
+#### 14.9.2 Task 2: Compiled Model Support (.mlmodelc)
+
+**Goal**: Add `.mlmodelc` (pre-compiled) model support for faster deployment.
+
+**Script**: `tests/dev/qwen35_compile.py` — compiles all `.mlpackage` files via `xcrun coremlcompiler compile`.
+
+**Findings**:
+- All 10 separate models compile successfully
+- **No speed improvement in Python** — CoreML compiles at load time regardless
+- Primary benefit for **Swift deployment** (skip compilation step)
+- `CompiledMLModel` does NOT support `function_name` — combined dedup .mlmodelc cannot use multi-function; use separate models instead
+- Chat server updated with `_find_model()` and `_load_model()` helpers that auto-detect .mlmodelc vs .mlpackage
+
+#### 14.9.3 Task 3: CPU-Fallback Cache Ops Analysis
+
+**Goal**: Identify and eliminate remaining CPU-fallback ops in decode path.
+
+**Analysis** (per FFN chunk, decode model):
+
+| Op | Count | Device | Status |
+|----|-------|--------|--------|
+| slice_update | 22 | CPU | Inherent — CoreML StateType writes always use slice_update |
+| cast | 2 | CPU | Structural — dtype conversions at tensor boundaries |
+| one_hot | 1 | CPU | Already optimized — F.one_hot is the ANE-legal pattern |
+| identity | 1 | CPU | Structural — buffer copy |
+
+Total: 26 CPU ops per chunk (1.0%), 104 across all 4 chunks (2.8% of 3711 total ops).
+
+**Conclusion**: No further optimizations available. All CPU fallbacks are either inherent to CoreML StateType (slice_update for state writes), already using the optimal ANE-legal pattern (F.one_hot), or minimal structural ops (cast, identity).
+
+#### 14.9.4 Task 4: LUT6 LM Head Evaluation
+
+**Goal**: Evaluate 6-bit LUT quantization for LM head to reduce size.
+
+**Script**: `tests/dev/qwen35_lut6_eval.py` — exports LUT6 LM head and compares against fp16.
+
+**Results**:
+
+| Metric | Value |
+|--------|-------|
+| fp16 size | 1213 MB |
+| LUT6 size | 458 MB |
+| **Size reduction** | **62.2%** |
+| Avg Top-1 agreement | **98.9%** |
+| Avg Top-5 agreement | **100.0%** |
+| Token match (90 tokens) | **98.9%** |
+
+**Recommendation**: LUT6 LM head is viable. Near-perfect accuracy (98.9% top-1 match) with 62.2% size reduction. Significantly better than LUT4 (70% — rejected at milestone 1).
+
+Total model size impact (LUT4 FFN + LUT4 embed + LUT6 lm_head): ~2.9 GB -> ~2.1 GB (26% savings).
+
+#### 14.9.5 Disk Space Warning
+
+CoreML accumulates cache at `~/Library/Caches/org.python.python/com.apple.e5rt.e5bundlecache` that can grow to 80+ GB, causing model loading failures with misleading errors. Clean periodically:
+```bash
+find ~/Library/Caches/org.python.python/com.apple.e5rt.e5bundlecache -type f -delete
+find ~/Library/Caches/org.python.python/com.apple.e5rt.e5bundlecache -type d -empty -delete
+```
+
+---
+
+## 15. Milestone 1.1 — Full-Prompt Batch Prefill + LUT6 LM Head
+
+### 15.1 Summary
+
+Milestone 1.1 upgrades from milestone 1 with two key improvements:
+
+1. **Full-prompt multi-block batch prefill**: All prompt tokens are processed in 256-token
+   blocks via batch prefill (not just the first 256 tokens).
+2. **LUT6 LM head as default**: The language model head uses 6-bit quantization
+   (98.9% top-1 match, 62.2% size reduction).
+
+### 15.2 Multi-Block Prefill Architecture
+
+**Problem**: Milestone 1's batch prefill only processed the first 256 tokens because
+the prefill model hardcoded KV cache writes to positions `[0:256]`. The remaining
+prompt tokens were processed sequentially at ~11 tok/s.
+
+**Solution**: Export separate prefill model variants for each block position, with
+different static KV cache write offsets frozen at trace time:
+
+| Block | Write Range | Current Pos (trace) | Function Name |
+|-------|-------------|---------------------|---------------|
+| 0 | KV[0:256] | 0 | `prefill_0` |
+| 1 | KV[256:512] | 256 | `prefill_256` |
+| 2 | KV[512:768] | 512 | `prefill_512` |
+| 3 | KV[768:1024] | 768 | `prefill_768` |
+
+Each model is ANE-legal because all slice bounds are static constants at export time.
+
+**Key model code change** (`anemll/models/qwen3_5_model.py`):
+```python
+# OLD (milestone 1): always writes from position 0
+key_cache[:, 0:seq_len, :] = key_states.squeeze(0)
+
+# NEW (milestone 1.1): current_pos.item() is evaluated at trace time
+start = int(current_pos.item())
+key_cache[:, start:start+seq_len, :] = key_states.squeeze(0)
+```
+
+**Runtime flow** (for 700-token prompt):
+1. Block 0: Batch prefill first 256 tokens (positions 0-255, ~109 tok/s)
+2. Block 1: Batch prefill tokens 256-511 (positions 256-511, ~109 tok/s)
+3. Tail: Sequential decode tokens 512-699 (~11 tok/s)
+
+**Causal mask** for block `b` (block_start = b * 256):
+- Shape: (1, 1, 256, 1024)
+- Row `i`: 0s at positions `[0 .. block_start+i]`, -65504 elsewhere
+- Ensures each token attends to ALL previous tokens (from prior blocks' KV cache)
+
+### 15.3 LUT6 LM Head Default
+
+Changed from fp16 to LUT6 in export pipeline:
+
+| Metric | fp16 (M1) | LUT6 (M1.1) |
+|--------|-----------|-------------|
+| Size | 1213 MB | 458 MB |
+| Size reduction | — | 62.2% |
+| Top-1 accuracy | 100% | 98.9% |
+| Top-5 accuracy | 100% | 100% |
+
+### 15.4 Pipeline Scripts
+
+Self-contained pipeline in `scripts_qwen3_5/`:
+
+```bash
+# Full pipeline
+./scripts_qwen3_5/run_pipeline.sh --model /path/to/Qwen3.5-4B --output /path/to/output
+
+# Step by step
+python scripts_qwen3_5/export.py --model /path/to/Qwen3.5-4B --output /path/to/output
+python scripts_qwen3_5/combine.py --input /path/to/output
+python scripts_qwen3_5/compile.py --model-dir /path/to/output
+```
+
+### 15.5 Model Inventory (Milestone 1.1)
+
+| Model | Count | Quantization | Purpose |
+|-------|-------|-------------|---------|
+| embeddings | 1 | LUT4 | Token embeddings |
+| lm_head | 1 | LUT6 | Next-token prediction |
+| ffn_LUT4_chunk{0..3} | 4 | LUT4 | Decode (single-token) |
+| prefill_LUT4_chunk{0..3}_block{0..3} | 16 | LUT4 | Multi-block prefill |
+| combined_LUT4_dedup/chunk{0..3} | 4 | LUT4 | Dedup combined (5 fn each) |
+| **Total separate** | **22** | | |
+| **Total combined** | **6** (embed + lmhead + 4 dedup) | | |
+
+### 15.6 Artifact Directory
+
+Canonical location: `/Users/yw68/qwen35_milestone1_1/`
+
+### 15.7 Changes Summary
+
+| File | Change |
+|------|--------|
+| `anemll/models/qwen3_5_model.py` | Prefill KV write uses `current_pos.item()` for block offset |
+| `anemll/ane_converter/qwen3_5_converter.py` | `convert_part_2_prefill()` accepts `block_start` parameter |
+| `tests/dev/qwen35_export.py` | LUT6 lm_head, multi-block prefill export |
+| `tests/dev/qwen35_combine.py` | Multi-function dedup with all prefill blocks |
+| `tests/dev/qwen35_chat_server.py` | Full-prompt batch prefill across all blocks |
+| `scripts_qwen3_5/` | New self-contained pipeline directory |

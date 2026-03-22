@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 1: Combine decode+prefill chunks with ANEMLL-Dedup.
+"""Qwen3.5-4B Milestone 1.2: Combine decode+prefill chunks with ANEMLL-Dedup.
 
 Takes the separate .mlpackage files from qwen35_export.py and combines
-each decode+prefill pair into a single multi-function .mlpackage with
+each decode + prefill into a single multi-function .mlpackage with
 shared (deduplicated) weights.
 
 Output structure:
   combined_LUT4_dedup/
-    chunk0.mlpackage  (functions: infer, prefill — weights shared)
+    chunk0.mlpackage  (functions: infer, prefill)
     chunk1.mlpackage
     chunk2.mlpackage
     chunk3.mlpackage
@@ -51,18 +51,19 @@ def main():
     os.makedirs(combined_dir, exist_ok=True)
 
     print("=" * 70)
-    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 1")
+    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 1.2")
     print(f"  Input: {args.input}")
     print(f"  Output: {combined_dir}")
+    print(f"  Functions per chunk: infer + prefill")
     print("=" * 70)
 
     # Verify all source files exist
     missing = []
     for ci in range(NUM_CHUNKS):
         dec = os.path.join(args.input, f"ffn_{label}_chunk{ci}.mlpackage")
-        pf = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
         if not os.path.exists(dec):
             missing.append(dec)
+        pf = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
         if not os.path.exists(pf):
             missing.append(pf)
     if missing:
@@ -91,8 +92,9 @@ def main():
             (dec_path, "main", "infer"),
             (pf_path, "main", "prefill"),
         ]
+
         t0 = time.time()
-        print(f"  Combining chunk {ci}...")
+        print(f"  Combining chunk {ci} (infer, prefill)...")
         _save_multifunction_dedup(sources, combined_path,
                                   dedup_weights=True, verbose=False)
         sz = dir_size_mb(combined_path)

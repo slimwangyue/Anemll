@@ -191,6 +191,50 @@ class Qwen35Converter(BaseConverter):
         return states
 
     @staticmethod
+    def GetChunkLocalPerLayerStates(
+        model: Qwen35ForCausalLM,
+        num_full_attn_layers: int,
+        prefix: str = "",
+    ):
+        """Per-layer 3D KV cache states for ANE-friendly dynamic slicing.
+
+        Instead of one 4D tensor (num_layers, kv_heads, CTX, head_dim) that
+        requires compound indexing (layer dim + position dim), this creates
+        separate 3D (kv_heads, CTX, head_dim) states for each full-attention
+        layer.  The simpler 3D slice_update is more reliably ANE-legal.
+        """
+        cfg = model.config
+        states = []
+        for i in range(num_full_attn_layers):
+            states.append(
+                ct.StateType(
+                    wrapped_type=ct.TensorType(
+                        shape=(
+                            cfg.num_key_value_heads,
+                            cfg.state_length,
+                            cfg.head_dim,
+                        ),
+                        dtype=np.float16,
+                    ),
+                    name=f"{prefix}k_cache_{i}",
+                )
+            )
+            states.append(
+                ct.StateType(
+                    wrapped_type=ct.TensorType(
+                        shape=(
+                            cfg.num_key_value_heads,
+                            cfg.state_length,
+                            cfg.head_dim,
+                        ),
+                        dtype=np.float16,
+                    ),
+                    name=f"{prefix}v_cache_{i}",
+                )
+            )
+        return states
+
+    @staticmethod
     def _make_palettizer_config(nbits, per_channel, num_workers):
         if per_channel <= 0:
             return cto.coreml.OpPalettizerConfig(
@@ -459,10 +503,8 @@ class Qwen35Converter(BaseConverter):
         cfg = model.config
         hidden_states = torch.zeros((1, 1, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE)
         position_ids = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
+        # causal_mask: full CTX width for attention masking.
         causal_mask = torch.zeros((1, 1, 1, self.context_length), dtype=torch.float16, device=TEST_DEVICE)
-        # Match the teacher decode contract: single-token chunk exports trace
-        # from position 0, with zero-initialized external state providing the
-        # first-step cache/state contents.
         current_pos = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
 
         # Linear attention states as regular I/O tensors (not CoreML state)
@@ -511,7 +553,8 @@ class Qwen35Converter(BaseConverter):
         return mlmodel
 
     def convert_part_2_prefill(
-        self, model: Qwen35ForCausalLM, chunk_idx: int = 0, total_chunks: int = 1
+        self, model: Qwen35ForCausalLM, chunk_idx: int = 0, total_chunks: int = 1,
+        block_start: int = 0,
     ) -> ct.models.MLModel:
         require_coreml()
         total_layers = model.config.num_hidden_layers
@@ -620,10 +663,10 @@ class Qwen35Converter(BaseConverter):
             (1, self.batch_size, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
         )
         position_ids = torch.zeros((self.batch_size,), dtype=torch.int32, device=TEST_DEVICE)
+        # causal_mask: full CTX width for attention masking.
         causal_mask = torch.zeros(
             (1, 1, self.batch_size, self.context_length), dtype=torch.float16, device=TEST_DEVICE
         )
-        # Match the teacher prefill contract: prefill starts writing at position 0.
         current_pos = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
 
         # Linear attention states as regular I/O tensors (not CoreML state)

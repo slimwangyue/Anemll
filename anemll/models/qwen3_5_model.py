@@ -1669,20 +1669,12 @@ class Qwen35Model(nn.Module):
 
         x = layer.input_layernorm(hidden_states)
         query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
-        # one_hot write: compute mask from current_pos inside the graph.
-        # F.one_hot keeps pos as a tensor (no aten::Int), staying dynamic
-        # through jit.trace → MIL.  Produces ANE-native mul+add ops.
-        # Use config constant (not tensor.shape) to avoid aten::size → aten::Int.
-        sl = self.config.state_length
-        update_mask = F.one_hot(current_pos.long(), num_classes=sl).to(hidden_states.dtype)
-        update_mask = update_mask.view(1, 1, sl, 1)
+        # Tensor-value slice: current_pos[0] → aten::select → stays dynamic on ANE.
+        # No RangeDim needed. For decode at pos p: current_pos=[p], pos=p, write at pos:pos+1.
+        pos = current_pos[0]
         if k_cache is not None and v_cache is not None:
-            k_slice = k_cache[local_layer_idx : local_layer_idx + 1]
-            k_expanded = key_states.expand_as(k_slice)
-            k_cache[local_layer_idx : local_layer_idx + 1] = k_slice * (1.0 - update_mask) + k_expanded * update_mask
-            v_slice = v_cache[local_layer_idx : local_layer_idx + 1]
-            v_expanded = value_states.expand_as(v_slice)
-            v_cache[local_layer_idx : local_layer_idx + 1] = v_slice * (1.0 - update_mask) + v_expanded * update_mask
+            k_cache[local_layer_idx, :, pos:pos+1, :] = key_states.squeeze(0)
+            v_cache[local_layer_idx, :, pos:pos+1, :] = value_states.squeeze(0)
             key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
             value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
         else:
@@ -1690,12 +1682,8 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            k_slice = kv_cache_0[key_idx : key_idx + 1]
-            k_expanded = key_states.expand_as(k_slice)
-            kv_cache_0[key_idx : key_idx + 1] = k_slice * (1.0 - update_mask) + k_expanded * update_mask
-            v_slice = kv_cache_0[value_idx : value_idx + 1]
-            v_expanded = value_states.expand_as(v_slice)
-            kv_cache_0[value_idx : value_idx + 1] = v_slice * (1.0 - update_mask) + v_expanded * update_mask
+            kv_cache_0[key_idx, :, pos:pos+1, :] = key_states.squeeze(0)
+            kv_cache_0[value_idx, :, pos:pos+1, :] = value_states.squeeze(0)
             key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
             value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_regular(
@@ -1895,30 +1883,24 @@ class Qwen35Model(nn.Module):
 
         seq_len = expected_seq_len if expected_seq_len is not None else key_states.shape[2]
         # Use the caller-provided causal_mask instead of building one internally.
-        # _build_fixed_cache_mask uses torch.where which compiles to 'select' — not ANE-legal.
-        # The caller already provides the correct mask as a model input.
         fixed_mask = causal_mask
+        # Tensor-value slice: current_pos[0] → aten::select → stays dynamic on ANE.
+        # No RangeDim needed. For prefill at block_start P: current_pos=[P], write at pos:pos+seq_len.
+        pos = current_pos[0]
         if k_cache is not None and v_cache is not None:
-            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
-            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0).clone()
-            # Use static bounds 0:seq_len for ANE compatibility.
-            # Dynamic pos:pos+seq_len compiles to slice_update with unresolved params → ANE failure.
-            # Prefill always writes from position 0.
-            key_cache[:, 0:seq_len, :] = key_states.squeeze(0)
-            value_cache[:, 0:seq_len, :] = value_states.squeeze(0)
-            k_cache[local_layer_idx : local_layer_idx + 1] = key_cache.unsqueeze(0)
-            v_cache[local_layer_idx : local_layer_idx + 1] = value_cache.unsqueeze(0)
+            k_cache[local_layer_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
+            v_cache[local_layer_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
         else:
             if kv_cache_0 is None:
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            key_cache = kv_cache_0[key_idx:key_idx + 1].squeeze(0).clone()
-            value_cache = kv_cache_0[value_idx:value_idx + 1].squeeze(0).clone()
-            key_cache[:, 0:seq_len, :] = key_states.squeeze(0)
-            value_cache[:, 0:seq_len, :] = value_states.squeeze(0)
-            kv_cache_0[key_idx:key_idx + 1] = key_cache.unsqueeze(0)
-            kv_cache_0[value_idx:value_idx + 1] = value_cache.unsqueeze(0)
+            kv_cache_0[key_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
+            kv_cache_0[value_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+            key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
+            value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_prefill(
             hidden_states=x,
             query_states=query_states,

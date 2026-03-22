@@ -308,6 +308,31 @@ document.getElementById('input').focus();
 </html>
 """
 
+# ── Constants ────────────────────────────────────────────────────────
+
+BATCH_SIZE = 256   # prefill batch size (must match export)
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def _load_model(path, compute_unit, function_name=None):
+    """Load a CoreML model from .mlpackage or .mlmodelc."""
+    if path.endswith(".mlmodelc"):
+        return ct.models.CompiledMLModel(path, compute_unit)
+    kwargs = {"compute_units": compute_unit}
+    if function_name:
+        kwargs["function_name"] = function_name
+    return ct.models.MLModel(path, **kwargs)
+
+
+def _find_model(base_dir, name):
+    """Find model path, preferring .mlmodelc over .mlpackage."""
+    for ext in (".mlmodelc", ".mlpackage"):
+        p = os.path.join(base_dir, name + ext)
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"No model found for {name} in {base_dir}")
+
+
 # ── Model Engine ─────────────────────────────────────────────────────
 
 class ChatEngine:
@@ -316,6 +341,7 @@ class ChatEngine:
         self.hf_path = hf_path
         self.ctx = ctx
         self.num_chunks = num_chunks
+        self.batch_size = BATCH_SIZE
         self.ready = False
         self.lock = threading.Lock()
 
@@ -326,47 +352,136 @@ class ChatEngine:
         self.lin_convs = None
         self.lin_recs = None
 
+        # Prefill models: one per chunk (dynamic position via RangeDim)
+        self.prefill_ffns = None
+        self._prefill_loaded = False
+
         # Template token IDs (filled after tokenizer loads)
         self.tpl_tokens = {}
 
+        # Detect combined dedup dir
+        self.combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+        self.use_combined = os.path.isdir(self.combined_dir)
+
     def load(self):
         """Load models (call in background thread)."""
+        cu = ct.ComputeUnit.CPU_AND_NE
+
         print("[engine] Loading tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(self.hf_path, use_fast=False)
         self._build_stop_ids()
         self._build_template_tokens()
 
         print("[engine] Loading embeddings...")
-        self.embed = ct.models.MLModel(
-            os.path.join(self.model_dir, "embeddings.mlpackage"),
-            compute_units=ct.ComputeUnit.CPU_AND_NE)
+        self.embed = _load_model(_find_model(self.model_dir, "embeddings"), cu)
 
         print("[engine] Loading lm_head...")
-        self.lmhead = ct.models.MLModel(
-            os.path.join(self.model_dir, "lm_head.mlpackage"),
-            compute_units=ct.ComputeUnit.CPU_AND_NE)
+        self.lmhead = _load_model(_find_model(self.model_dir, "lm_head"), cu)
 
         print("[engine] Loading FFN chunks...")
         self.ffns = []
         for ci in range(self.num_chunks):
-            print(f"  chunk {ci}...")
-            m = ct.models.MLModel(
-                os.path.join(self.model_dir, f"ffn_LUT4_chunk{ci}.mlpackage"),
-                compute_units=ct.ComputeUnit.CPU_AND_NE)
+            if self.use_combined:
+                try:
+                    path = _find_model(self.combined_dir, f"chunk{ci}")
+                    # .mlmodelc doesn't support function_name
+                    if path.endswith(".mlmodelc"):
+                        raise FileNotFoundError("Use separate models for .mlmodelc")
+                    print(f"  combined chunk {ci} (infer)...")
+                    m = _load_model(path, cu, function_name="infer")
+                    m.make_state()  # verify it loaded
+                except Exception as e:
+                    print(f"  Combined load failed ({e}), falling back to separate...")
+                    self.use_combined = False
+                    path = _find_model(self.model_dir, f"ffn_LUT4_chunk{ci}")
+                    print(f"  ffn chunk {ci}...")
+                    m = _load_model(path, cu)
+            else:
+                path = _find_model(self.model_dir, f"ffn_LUT4_chunk{ci}")
+                print(f"  ffn chunk {ci}...")
+                m = _load_model(path, cu)
             self.ffns.append(m)
 
-        # Get input shapes
-        spec = self.ffns[0].get_spec()
+        # Get input shapes from first decode chunk
         self.inp_map = {}
-        for inp in spec.description.input:
-            try:
-                self.inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
-            except Exception:
-                pass
+        try:
+            spec = self.ffns[0].get_spec()
+            fn_inputs = None
+            if self.use_combined and hasattr(spec.description, 'functions'):
+                for fn in spec.description.functions:
+                    if fn.name == "infer":
+                        fn_inputs = fn.input
+                        break
+            if fn_inputs is None:
+                fn_inputs = spec.description.input
+            for inp in fn_inputs:
+                try:
+                    self.inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
+                except Exception:
+                    pass
+        except Exception:
+            # CompiledMLModel may not have get_spec — use known shapes
+            print("[engine] Using default input shapes (CompiledMLModel)")
+            self.inp_map = {
+                'linear_conv_state': (8, 1024, 32),
+                'linear_recurrent_state': (8, 32, 128, 128),
+            }
 
         self._reset_states()
         self.ready = True
-        print(f"[engine] Ready! CTX={self.ctx}, stop_ids={self.stop_ids}")
+        mode = "combined-dedup" if self.use_combined else "separate"
+        print(f"[engine] Ready! CTX={self.ctx}, mode={mode}, stop_ids={self.stop_ids}")
+
+    def _load_prefill_models(self):
+        """Lazy-load prefill models (one per chunk, dynamic position via tensor-value slice).
+
+        Prefill uses ct.ComputeUnit.CPU_AND_NE for ANE inference.
+        Tries combined dedup first (function_name="prefill"),
+        falls back to separate .mlpackage files.
+        Sets self.prefill_ffns[chunk_idx].
+        """
+        if self._prefill_loaded:
+            return True
+        cu = ct.ComputeUnit.CPU_AND_NE
+        print("[engine] Loading prefill models (first use, CPU_AND_NE)...")
+
+        # Strategy 1: Combined dedup models with function_name="prefill"
+        if self.use_combined:
+            try:
+                chunk_models = []
+                for ci in range(self.num_chunks):
+                    path = _find_model(self.combined_dir, f"chunk{ci}")
+                    if path.endswith(".mlmodelc"):
+                        raise FileNotFoundError("CompiledMLModel does not support function_name")
+                    print(f"  combined chunk {ci} (prefill)...")
+                    m = _load_model(path, cu, function_name="prefill")
+                    m.make_state()
+                    chunk_models.append(m)
+                self.prefill_ffns = chunk_models
+                self._prefill_loaded = True
+                print(f"[engine] Prefill models ready (combined dedup)!")
+                return True
+            except Exception as e:
+                print(f"  Combined prefill load failed: {e}")
+                self.prefill_ffns = None
+
+        # Strategy 2: Separate prefill models
+        try:
+            chunk_models = []
+            for ci in range(self.num_chunks):
+                name = f"prefill_LUT4_chunk{ci}"
+                path = _find_model(self.model_dir, name)
+                print(f"  separate prefill chunk {ci}...")
+                m = _load_model(path, cu)
+                chunk_models.append(m)
+            self.prefill_ffns = chunk_models
+            self._prefill_loaded = True
+            print(f"[engine] Prefill models ready (separate)!")
+            return True
+        except FileNotFoundError as e:
+            print(f"  No prefill models available: {e}")
+            self.prefill_ffns = None
+            return False
 
     def _build_stop_ids(self):
         self.stop_ids = set()
@@ -401,11 +516,64 @@ class ChatEngine:
             self._reset_states()
             self.messages = []
 
+    def _batch_prefill(self, token_ids, block_start=0):
+        """Process exactly BATCH_SIZE tokens through prefill models.
+
+        block_start is the KV cache write position (0, 256, 512, ...).
+        current_pos shape encodes end_step = block_start + BATCH via RangeDim.
+
+        Returns next_token_id for the last token in the batch.
+        Updates self.pos and all states/linear states.
+        """
+        batch = token_ids[:self.batch_size]
+        assert len(batch) == self.batch_size
+
+        end_step = block_start + self.batch_size
+
+        # Batch embedding: (1, BATCH_SIZE)
+        input_ids = np.array([batch], dtype=np.int32)
+        hidden = list(self.embed.predict({"input_ids": input_ids}).values())[0]
+
+        # Full CTX causal mask for attention
+        mask = np.full((1, 1, self.batch_size, self.ctx), -65504.0, dtype=np.float16)
+        for i in range(self.batch_size):
+            mask[0, 0, i, :block_start + i + 1] = 0
+
+        pos_ids = np.arange(block_start, end_step, dtype=np.int32)
+        current_pos = np.array([block_start], dtype=np.int32)
+
+        # Run through prefill chunks
+        for ci in range(self.num_chunks):
+            inp = {
+                "hidden_states": hidden.astype(np.float16),
+                "position_ids": pos_ids,
+                "causal_mask": mask,
+                "current_pos": current_pos,
+                "linear_conv_state": self.lin_convs[ci],
+                "linear_recurrent_state": self.lin_recs[ci],
+            }
+            out = self.prefill_ffns[ci].predict(inp, state=self.states[ci])
+            hidden = out["output_hidden_states"]
+            if 'linear_conv_state_out' in out:
+                self.lin_convs[ci] = out['linear_conv_state_out']
+                self.lin_recs[ci] = out['linear_recurrent_state_out']
+
+        # Last chunk outputs (1, 1, 2560) — the last token's hidden state
+        lm_out = self.lmhead.predict({"hidden_states": hidden.astype(np.float16)})
+        if "logits" in lm_out:
+            next_id = int(np.argmax(lm_out["logits"].flatten()))
+        else:
+            next_id = int(lm_out["argmax_idx"].flatten()[0])
+
+        self.pos = end_step
+        return next_id
+
     def _step(self, tok_id, pos):
         """Run one token through the full pipeline. Returns next token id."""
         tok = np.array([[tok_id]], dtype=np.int32)
         hidden = list(self.embed.predict({"input_ids": tok}).values())[0]
 
+        # Full CTX mask for attention
         mask = np.full((1, 1, 1, self.ctx), -65504.0, dtype=np.float16)
         mask[:, :, :, :pos + 1] = 0
 
@@ -475,16 +643,44 @@ class ChatEngine:
                     return
                 max_tokens = min(max_tokens, remaining)
 
-            # Prefill prompt tokens
+            # ── Prefill prompt tokens ──
             t0 = time.time()
-            for tok_id in prompt_tokens:
+            n_prompt = len(prompt_tokens)
+            n_batch_prefilled = 0
+
+            # Use batch prefill if starting from pos 0 and prompt >= BATCH_SIZE
+            if self.pos == 0 and n_prompt >= self.batch_size and self._prefill_loaded:
+                # Process all full blocks via batch prefill
+                block_start = 0
+                while ((n_prompt - n_batch_prefilled) >= self.batch_size
+                       and block_start + self.batch_size <= self.ctx):
+                    batch_tokens = prompt_tokens[n_batch_prefilled:n_batch_prefilled + self.batch_size]
+                    last_next = self._batch_prefill(batch_tokens, block_start=block_start)
+                    n_batch_prefilled += self.batch_size
+                    block_start += self.batch_size
+                n_blocks = n_batch_prefilled // self.batch_size
+                t_batch = time.time() - t0
+                print(f"[prefill] batch: {n_batch_prefilled} tokens ({n_blocks} blocks) in "
+                      f"{t_batch*1000:.0f}ms ({n_batch_prefilled/max(t_batch, 1e-9):.0f} tok/s)")
+
+            # Process remaining prompt tokens one-by-one through decode
+            t_seq = time.time()
+            for tok_id in prompt_tokens[n_batch_prefilled:]:
                 if self.pos >= self.ctx - 1:
                     yield {"type": "error", "message": "Context limit reached during prefill."}
                     return
                 last_next = self._step(tok_id, self.pos)
                 self.pos += 1
+            n_sequential = n_prompt - n_batch_prefilled
+            t_seq_elapsed = time.time() - t_seq
+            if n_sequential > 0:
+                print(f"[prefill] sequential: {n_sequential} tokens in {t_seq_elapsed*1000:.0f}ms "
+                      f"({n_sequential/max(t_seq_elapsed, 1e-9):.0f} tok/s)")
+            t_prefill_total = time.time() - t0
+            print(f"[prefill] total: {n_prompt} tokens in {t_prefill_total*1000:.0f}ms "
+                  f"(batch={n_batch_prefilled}, seq={n_sequential})")
 
-            # Decode
+            # ── Decode (generate) ──
             generated = []
             generated_ids = [last_next]
             text_so_far = self.tokenizer.decode([last_next], skip_special_tokens=False)
@@ -558,6 +754,8 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "ctx": engine.ctx,
                 "pos": engine.pos,
                 "turns": len(engine.messages) // 2,
+                "prefill_ready": engine._prefill_loaded,
+                "mode": "combined-dedup" if engine.use_combined else "separate",
             })
         else:
             self.send_error(404)
@@ -623,6 +821,8 @@ def main():
     # Load models in background thread
     def load_models():
         engine.load()
+        # Load prefill models in background after decode is ready
+        engine._load_prefill_models()
     load_thread = threading.Thread(target=load_models, daemon=True)
     load_thread.start()
 
