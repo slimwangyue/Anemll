@@ -173,99 +173,157 @@ def _build_stop_ids(tokenizer):
     return stop_ids
 
 
+# ── Model loading helpers (same as chat_server.py) ──────────────────
+
+def _load_model(path, compute_unit, function_name=None):
+    """Load a CoreML model from .mlpackage or .mlmodelc."""
+    if path.endswith(".mlmodelc"):
+        return ct.models.CompiledMLModel(path, compute_unit)
+    kwargs = {"compute_units": compute_unit}
+    if function_name:
+        kwargs["function_name"] = function_name
+    return ct.models.MLModel(path, **kwargs)
+
+
+def _find_model(base_dir, name):
+    """Find model path, preferring .mlmodelc over .mlpackage."""
+    for ext in (".mlmodelc", ".mlpackage"):
+        p = os.path.join(base_dir, name + ext)
+        if os.path.exists(p):
+            return p
+    raise FileNotFoundError(f"No model found for {name} in {base_dir}")
+
+
 # ── Profiling Engine ─────────────────────────────────────────────────
 
 class ProfileEngine:
-    def __init__(self, out_dir, ffn_label, compute_unit, load_prefill=False, name="engine"):
+    def __init__(self, out_dir, ffn_label, compute_unit, name="engine"):
         self.name = name
         self.out_dir = out_dir
         self.cu = compute_unit
         self.load_times = {}
         self.ane_failures = []
 
+        # Detect combined dedup directory (same as chat_server.py)
+        self.combined_dir = os.path.join(out_dir, "combined_LUT4_dedup")
+        self.use_combined = os.path.isdir(self.combined_dir)
+
+        # --- Embeddings ---
         t0 = time.time()
-        self.embed = ct.models.MLModel(
-            os.path.join(out_dir, "embeddings.mlpackage"), compute_units=compute_unit)
+        self.embed = _load_model(_find_model(out_dir, "embeddings"), compute_unit)
         self.load_times['embed'] = time.time() - t0
 
+        # --- LM Head (prefer logits, same as chat_server.py) ---
         t0 = time.time()
-        self.lmhead = ct.models.MLModel(
-            os.path.join(out_dir, "lm_head.mlpackage"), compute_units=compute_unit)
+        try:
+            lmhead_path = _find_model(out_dir, "lm_head_logits")
+            self.lmhead = _load_model(lmhead_path, compute_unit)
+            self.lmhead_mode = "logits"
+            print(f"  Loaded logits lm_head (penalties enabled)")
+        except FileNotFoundError:
+            self.lmhead = _load_model(
+                _find_model(out_dir, "lm_head"), compute_unit)
+            spec = self.lmhead.get_spec()
+            out_names = [o.name for o in spec.description.output]
+            self.lmhead_mode = "logits" if ("logits" in out_names
+                                            or "output_logits" in out_names
+                                            ) else "argmax"
+            print(f"  Loaded lm_head (mode={self.lmhead_mode})")
+        if self.lmhead_mode == "logits":
+            spec = self.lmhead.get_spec()
+            out_names = [o.name for o in spec.description.output]
+            self.logits_key = ("output_logits" if "output_logits" in out_names
+                              else "logits")
         self.load_times['lmhead'] = time.time() - t0
 
+        # --- FFN chunks (infer + prefill, same as chat_server.py) ---
         self.ffns = []
+        self.prefills = []
+        self.has_prefill = False
+
         for ci in range(NUM_CHUNKS):
-            t0 = time.time()
-            m = self._load_with_fallback(
-                os.path.join(out_dir, f"ffn_{ffn_label}_chunk{ci}.mlpackage"),
-                compute_unit, f"ffn_chunk{ci}")
-            self.ffns.append(m)
+            # --- infer instance ---
+            if self.use_combined:
+                path = _find_model(self.combined_dir, f"chunk{ci}")
+                if path.endswith(".mlmodelc"):
+                    self.use_combined = False
+            if self.use_combined:
+                print(f"  chunk {ci} infer  (combined)...", end="", flush=True)
+                t0 = time.time()
+                m_infer = _load_model(path, compute_unit, function_name="infer")
+                print(f" {time.time()-t0:.0f}s")
+            else:
+                path = _find_model(out_dir, f"ffn_LUT4_chunk{ci}")
+                print(f"  chunk {ci} infer  (separate)...", end="", flush=True)
+                t0 = time.time()
+                m_infer = _load_model(path, compute_unit)
+                print(f" {time.time()-t0:.0f}s")
+            self.ffns.append(m_infer)
             self.load_times[f'ffn_chunk{ci}'] = time.time() - t0
 
-        self.prefills = []
-        if load_prefill:
-            for ci in range(NUM_CHUNKS):
+            # --- prefill instance ---
+            m_prefill = None
+            if self.use_combined:
+                print(f"  chunk {ci} prefill (combined)...", end="", flush=True)
                 t0 = time.time()
-                m = self._load_with_fallback(
-                    os.path.join(out_dir, f"prefill_{ffn_label}_chunk{ci}.mlpackage"),
-                    compute_unit, f"prefill_chunk{ci}")
-                self.prefills.append(m)
+                m_prefill = _load_model(path, compute_unit, function_name="prefill")
+                print(f" {time.time()-t0:.0f}s")
+            else:
+                try:
+                    pf_path = _find_model(out_dir, f"prefill_LUT4_chunk{ci}")
+                    print(f"  chunk {ci} prefill (separate)...", end="", flush=True)
+                    t0 = time.time()
+                    m_prefill = _load_model(pf_path, compute_unit)
+                    print(f" {time.time()-t0:.0f}s")
+                except FileNotFoundError:
+                    print(f"  chunk {ci} prefill — not found, batch disabled")
+            if m_prefill is not None:
                 self.load_times[f'prefill_chunk{ci}'] = time.time() - t0
+            self.prefills.append(m_prefill)
+
+        self.has_prefill = all(p is not None for p in self.prefills)
 
         spec = self.ffns[0].get_spec()
+        # Detect input shapes (same as chat_server.py _detect_shapes)
         self.inp_map = {}
-        for inp in spec.description.input:
-            try:
-                self.inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
-            except Exception:
-                pass
-        self.has_linear = 'linear_conv_state' in self.inp_map
-        self.reset_all()
-
-    def _load_with_fallback(self, path, compute_unit, label):
-        """Load a model, retry with ALL then CPU_AND_GPU if make_state fails."""
-        import warnings
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            m = ct.models.MLModel(path, compute_units=compute_unit)
         try:
-            s = m.make_state()
-            del s
-            return m
+            spec = self.ffns[0].get_spec()
+            fn_inputs = None
+            if self.use_combined and hasattr(spec.description, 'functions'):
+                for fn in spec.description.functions:
+                    if fn.name == "infer":
+                        fn_inputs = fn.input
+                        break
+            if fn_inputs is None:
+                fn_inputs = spec.description.input
+            for inp in fn_inputs:
+                try:
+                    self.inp_map[inp.name] = tuple(
+                        inp.type.multiArrayType.shape)
+                except Exception:
+                    pass
         except Exception:
-            pass
-        # Retry with ALL
-        if compute_unit != ct.ComputeUnit.ALL:
-            print(f"    [WARN] {label}: ANE failed, retrying with ALL...")
-            del m
-            gc.collect()
-            time.sleep(1)
-            m = ct.models.MLModel(path, compute_units=ct.ComputeUnit.ALL)
-            try:
-                s = m.make_state()
-                del s
-                return m
-            except Exception:
-                pass
-        # Final fallback to CPU_AND_GPU
-        print(f"    [WARN] {label}: falling back to CPU_AND_GPU")
-        del m
-        gc.collect()
-        m = ct.models.MLModel(path, compute_units=ct.ComputeUnit.CPU_AND_GPU)
-        self.ane_failures.append(label)
-        return m
+            print("  Using default input shapes")
+            self.inp_map = {
+                'linear_conv_state': (8, 1024, 32),
+                'linear_recurrent_state': (8, 32, 128, 128),
+            }
+        self.reset_all()
 
     def reset_all(self):
         self.states = [m.make_state() for m in self.ffns]
-        self.prefill_states = [m.make_state() for m in self.prefills] if self.prefills else []
-        if self.has_linear:
-            self.lin_convs = [np.zeros(self.inp_map['linear_conv_state'], dtype=np.float16)
-                              for _ in range(NUM_CHUNKS)]
-            self.lin_recs = [np.zeros(self.inp_map['linear_recurrent_state'], dtype=np.float16)
-                             for _ in range(NUM_CHUNKS)]
-        else:
-            self.lin_convs = [None] * NUM_CHUNKS
-            self.lin_recs = [None] * NUM_CHUNKS
+        self.prefill_states = [m.make_state() for m in self.prefills
+                               if m is not None] if self.prefills else []
+        self.lin_convs = [
+            np.zeros(self.inp_map['linear_conv_state'], dtype=np.float16)
+            for _ in range(NUM_CHUNKS)]
+        self.lin_recs = [
+            np.zeros(self.inp_map['linear_recurrent_state'], dtype=np.float16)
+            for _ in range(NUM_CHUNKS)]
+        # Pre-allocate reusable buffers (same as chat_server.py)
+        self._tok_buf = np.zeros((1, 1), dtype=np.int32)
+        self._mask_buf = np.full((1, 1, 1, CTX), -65504.0, dtype=np.float16)
+        self._pos_buf = np.zeros(1, dtype=np.int32)
         self.clear_timing()
 
     def clear_timing(self):
@@ -277,23 +335,27 @@ class ProfileEngine:
     def _step(self, tok_id, pos):
         t_step = time.perf_counter()
 
-        tok = np.array([[tok_id]], dtype=np.int32)
+        tok = self._tok_buf
+        tok[0, 0] = tok_id
         t0 = time.perf_counter()
         hidden = list(self.embed.predict({"input_ids": tok}).values())[0]
         self.t_embed.append(time.perf_counter() - t0)
 
-        mask = np.full((1, 1, 1, CTX), -65504.0, dtype=np.float16)
+        mask = self._mask_buf
+        mask[:, :, :, :] = -65504.0
         mask[:, :, :, :pos + 1] = 0
+
+        pos_arr = self._pos_buf
+        pos_arr[0] = pos
         for ci in range(NUM_CHUNKS):
             inp = {
                 "hidden_states": hidden.astype(np.float16),
-                "position_ids": np.array([pos], dtype=np.int32),
+                "position_ids": pos_arr,
                 "causal_mask": mask,
-                "current_pos": np.array([pos], dtype=np.int32),
+                "current_pos": pos_arr,
+                "linear_conv_state": self.lin_convs[ci],
+                "linear_recurrent_state": self.lin_recs[ci],
             }
-            if self.lin_convs[ci] is not None:
-                inp["linear_conv_state"] = self.lin_convs[ci]
-                inp["linear_recurrent_state"] = self.lin_recs[ci]
             t0 = time.perf_counter()
             out = self.ffns[ci].predict(inp, state=self.states[ci])
             self.t_ffn[ci].append(time.perf_counter() - t0)
@@ -308,8 +370,8 @@ class ProfileEngine:
 
         self.t_step.append(time.perf_counter() - t_step)
 
-        if "logits" in lm_out:
-            return int(np.argmax(lm_out["logits"].flatten()))
+        if self.lmhead_mode == "logits":
+            return int(np.argmax(lm_out[self.logits_key].flatten()))
         return int(lm_out["argmax_idx"].flatten()[0])
 
     def prefill_and_decode(self, token_ids, start_pos, max_gen, stop_ids):
@@ -401,18 +463,47 @@ def main():
     # ══════════════════════════════════════════════════════════════════
     print_section("MIL Operation Analysis", 1)
 
-    model_specs = [
-        (os.path.join(out_dir, "embeddings.mlpackage"), "Embeddings (LUT4)"),
-        (os.path.join(out_dir, "lm_head.mlpackage"), "LM Head (fp16)"),
-    ]
-    for ci in range(NUM_CHUNKS):
-        model_specs.append((
-            os.path.join(out_dir, f"ffn_{ffn_label}_chunk{ci}.mlpackage"),
-            f"FFN decode chunk{ci}"))
-    for ci in range(NUM_CHUNKS):
-        model_specs.append((
-            os.path.join(out_dir, f"prefill_{ffn_label}_chunk{ci}.mlpackage"),
-            f"FFN prefill chunk{ci}"))
+    # Discover model files the same way as chat_server.py
+    combined_dir = os.path.join(out_dir, "combined_LUT4_dedup")
+    use_combined = os.path.isdir(combined_dir)
+
+    model_specs = []
+    # Embeddings
+    try:
+        model_specs.append((_find_model(out_dir, "embeddings"), "Embeddings (LUT4)"))
+    except FileNotFoundError:
+        pass
+    # LM Head (prefer logits, same as chat_server.py)
+    try:
+        model_specs.append((_find_model(out_dir, "lm_head_logits"), "LM Head logits"))
+    except FileNotFoundError:
+        try:
+            model_specs.append((_find_model(out_dir, "lm_head"), "LM Head (fp16)"))
+        except FileNotFoundError:
+            pass
+    # FFN chunks (combined or separate)
+    if use_combined:
+        for ci in range(NUM_CHUNKS):
+            try:
+                model_specs.append((_find_model(combined_dir, f"chunk{ci}"),
+                                    f"FFN combined chunk{ci}"))
+            except FileNotFoundError:
+                pass
+    else:
+        for ci in range(NUM_CHUNKS):
+            try:
+                model_specs.append((_find_model(out_dir, f"ffn_{ffn_label}_chunk{ci}"),
+                                    f"FFN decode chunk{ci}"))
+            except FileNotFoundError:
+                pass
+        for ci in range(NUM_CHUNKS):
+            try:
+                model_specs.append((_find_model(out_dir, f"prefill_{ffn_label}_chunk{ci}"),
+                                    f"FFN prefill chunk{ci}"))
+            except FileNotFoundError:
+                pass
+
+    print(f"  Model loading mode: {'COMBINED' if use_combined else 'SEPARATE'}")
 
     analyses = []
     for path, label in model_specs:
@@ -437,7 +528,7 @@ def main():
           f"{'':>6} {total_ane_pct:>6.1f}%")
 
     # CPU-bound ops detail for one FFN chunk
-    ffn_analyses = [a for a in analyses if 'decode chunk0' in a['label']]
+    ffn_analyses = [a for a in analyses if 'chunk0' in a['label']]
     if ffn_analyses:
         ffn_a = ffn_analyses[0]
         cpu_ops = {t: c for t, c in ffn_a['op_counts'].items() if t in CPU_OPS}
@@ -463,7 +554,7 @@ def main():
     print(f"\n  Loading all models with CPU_AND_NE...")
     t_total_load = time.time()
     engine = ProfileEngine(out_dir, ffn_label, ct.ComputeUnit.CPU_AND_NE,
-                           load_prefill=False, name="ANE")
+                           name="ANE")
     t_total_load = time.time() - t_total_load
 
     print(f"\n  {'Component':<22} {'Load Time (s)':>14}")
@@ -515,7 +606,8 @@ def main():
         # Load CPU+GPU engine
         print(f"  Loading models with CPU_AND_GPU (no ANE)...")
         t0 = time.time()
-        engine_gpu = ProfileEngine(out_dir, ffn_label, ct.ComputeUnit.CPU_AND_GPU, name="GPU")
+        engine_gpu = ProfileEngine(out_dir, ffn_label, ct.ComputeUnit.CPU_AND_GPU,
+                                   name="GPU")
         print(f"  Loaded in {time.time()-t0:.0f}s")
 
         # Warmup
@@ -563,7 +655,7 @@ def main():
     if not args.quick:
         print_section("KV Cache Position Sweep (Decode Latency)", 4)
 
-        test_positions = [0, 5, 10, 50, 100, 200, 500, 900]
+        test_positions = [0, 5, 10, 50, 100, 200]
         test_positions = [p for p in test_positions if p < CTX - 5]
 
         print(f"\n  Feeding tokens to build KV cache, measuring step latency at key positions...")
