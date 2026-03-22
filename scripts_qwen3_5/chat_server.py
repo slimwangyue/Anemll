@@ -140,6 +140,10 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <label>Max tokens: <input type="number" id="maxTokens" value="512" min="16" max="2048"></label>
   <label>Show thinking: <input type="checkbox" id="showThink" checked></label>
   <label>Thinking mode: <input type="checkbox" id="enableThinking" checked></label>
+  <label>Repetition guard: <input type="checkbox" id="repGuard" checked></label>
+  <label>Rep penalty: <input type="number" id="repPenalty" value="1.0" min="1.0" max="2.0" step="0.05"></label>
+  <label>Pres penalty: <input type="number" id="presPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
+  <label>Freq penalty: <input type="number" id="freqPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
 </div>
 <div id="chat"></div>
 <div class="typing" id="typing"></div>
@@ -219,7 +223,7 @@ async function sendMsg() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking})
+      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking, repetition_guard: document.getElementById('repGuard').checked, repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.0, presence_penalty: parseFloat(document.getElementById('presPenalty').value) || 0.0, frequency_penalty: parseFloat(document.getElementById('freqPenalty').value) || 0.0})
     });
 
     const reader = resp.body.getReader();
@@ -227,7 +231,7 @@ async function sendMsg() {
     let buffer = '';
     let thinkText = '';
     let answerText = '';
-    let inThink = enableThinking;
+    let inThink = false;
     let msgDiv = null;
     let tokCount = 0;
     let startTime = Date.now();
@@ -251,7 +255,12 @@ async function sendMsg() {
 
         if (ev.type === 'token') {
           tokCount++;
-          const tok = ev.text;
+          let tok = ev.text;
+          // Detect <think> tag entering think mode
+          if (!inThink && tok.includes('<think>')) {
+            inThink = true;
+            tok = tok.replace('<think>', '');
+          }
           if (inThink && tok.includes('</think>')) {
             const parts = tok.split('</think>');
             thinkText += parts[0];
@@ -281,7 +290,7 @@ async function sendMsg() {
           document.getElementById('chat').scrollTop = document.getElementById('chat').scrollHeight;
         } else if (ev.type === 'done') {
           const elapsed = (Date.now() - startTime) / 1000;
-          const meta = `${ev.decode_tokens} tokens | ${elapsed.toFixed(1)}s | ${(ev.decode_tokens/elapsed).toFixed(1)} tok/s | pos=${ev.end_pos}`;
+          const meta = `${ev.decode_tokens} tokens | ${elapsed.toFixed(1)}s | ${(ev.decode_tokens/elapsed).toFixed(1)} tok/s | pos=${ev.end_pos}` + (ev.stop_reason === 'repetition' ? ' | ⚠ stopped: repetition' : '');
           if (msgDiv) {
             let html = '';
             if (showThink && thinkText.trim()) {
@@ -330,6 +339,51 @@ BLOCK_SIZE = 256        # logical prefill block size (matches model export)
 BATCH_SIZE = 256        # prefill batch size (must match compiled model)
 MIN_GEN_RESERVE = 100   # minimum tokens reserved for generation after prefill
 PREFILL_CROSSOVER = 32  # below this many tokens, sequential is faster than batch
+
+
+# ── Repetition Detection ─────────────────────────────────────────────
+
+class RepetitionDetector:
+    """Sliding-window n-gram repetition detector.
+
+    Maintains a window of recent token IDs and checks for repeated
+    n-grams.  When any n-gram appears >= threshold times within the
+    window, `is_repeating()` returns True.
+
+    This works with argmax-only LM heads (no logits required).
+    Matches the ANEMLLChat app's RepetitionDetector design.
+    """
+
+    def __init__(self, window_size=80, ngram_size=5, threshold=3):
+        self.window_size = window_size
+        self.ngram_size = ngram_size
+        self.threshold = threshold
+        self._window = []  # recent token IDs
+
+    def reset(self):
+        self._window.clear()
+
+    def add_token(self, token_id):
+        """Add a token and return True if repetition detected."""
+        self._window.append(token_id)
+        if len(self._window) > self.window_size:
+            self._window.pop(0)
+        return self._check()
+
+    def _check(self):
+        tokens = self._window
+        n = self.ngram_size
+        if len(tokens) < n:
+            return False
+        # Count n-gram occurrences
+        counts = {}
+        for i in range(len(tokens) - n + 1):
+            gram = tuple(tokens[i:i + n])
+            counts[gram] = counts.get(gram, 0) + 1
+            if counts[gram] >= self.threshold:
+                return True
+        return False
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -411,8 +465,28 @@ class ChatEngine:
             _find_model(self.model_dir, "embeddings"), cu)
 
         print("[engine] Loading lm_head...")
-        self.lmhead = _load_model(
-            _find_model(self.model_dir, "lm_head"), cu)
+        # Prefer logits lm_head (enables logit-space penalties)
+        try:
+            lmhead_path = _find_model(self.model_dir, "lm_head_logits")
+            self.lmhead = _load_model(lmhead_path, cu)
+            self.lmhead_mode = "logits"
+            print(f"  Loaded logits lm_head (penalties enabled)")
+        except FileNotFoundError:
+            self.lmhead = _load_model(
+                _find_model(self.model_dir, "lm_head"), cu)
+            # Detect output type
+            spec = self.lmhead.get_spec()
+            out_names = [o.name for o in spec.description.output]
+            self.lmhead_mode = "logits" if ("logits" in out_names
+                                            or "output_logits" in out_names
+                                            ) else "argmax"
+            print(f"  Loaded lm_head (mode={self.lmhead_mode})")
+        # Resolve the actual logits output key
+        if self.lmhead_mode == "logits":
+            spec = self.lmhead.get_spec()
+            out_names = [o.name for o in spec.description.output]
+            self.logits_key = ("output_logits" if "output_logits" in out_names
+                              else "logits")
 
         print("[engine] Loading FFN chunks (infer + prefill)...")
         self.ffns = []       # infer instances  (seq_len=1)
@@ -502,6 +576,7 @@ class ChatEngine:
             "im_end": t.convert_tokens_to_ids("<|im_end|>"),
             "nl": t.encode("\n", add_special_tokens=False),
             "think": t.convert_tokens_to_ids("<think>"),
+            "endthink": t.convert_tokens_to_ids("</think>"),
             "user": t.encode("user", add_special_tokens=False),
             "assistant": t.encode("assistant", add_special_tokens=False),
         }
@@ -587,9 +662,10 @@ class ChatEngine:
 
     def _step(self, tok_id, pos):
         """Run one token through embed -> all FFN chunks -> lm_head.
-        Returns the predicted next-token ID.
+        Returns (next_token_id, logits_or_None).
 
-        Used for the last prefill token and all decode tokens.
+        If lm_head outputs logits, returns raw logits as np.float32 array.
+        If lm_head uses fused argmax, returns None for logits.
         """
         tok = self._tok_buf
         tok[0, 0] = tok_id
@@ -620,9 +696,10 @@ class ChatEngine:
 
         lm_out = self.lmhead.predict(
             {"hidden_states": hidden.astype(np.float16)})
-        if "logits" in lm_out:
-            return int(np.argmax(lm_out["logits"].flatten()))
-        return int(lm_out["argmax_idx"].flatten()[0])
+        if self.lmhead_mode == "logits":
+            logits = lm_out[self.logits_key].flatten().astype(np.float32)
+            return int(np.argmax(logits)), logits
+        return int(lm_out["argmax_idx"].flatten()[0]), None
 
     def _batch_prefill(self, token_ids, block_start):
         """Process up to BATCH_SIZE tokens through the prefill function.
@@ -685,13 +762,40 @@ class ChatEngine:
         # state and applies RMSNorm → shape (1, 1, hidden_size).
         lm_out = self.lmhead.predict(
             {"hidden_states": hidden.astype(np.float16)})
-        if "logits" in lm_out:
-            next_id = int(np.argmax(lm_out["logits"].flatten()))
+        if self.lmhead_mode == "logits":
+            next_id = int(np.argmax(lm_out[self.logits_key].flatten()))
         else:
             next_id = int(lm_out["argmax_idx"].flatten()[0])
 
         self.pos = block_start + valid_len
         return next_id
+
+    # ── Logit-space penalties ────────────────────────────────────────
+
+    def _apply_penalties(self, logits, generated_ids,
+                         repetition_penalty=1.0,
+                         presence_penalty=0.0,
+                         frequency_penalty=0.0):
+        """Apply repetition/presence/frequency penalties, return token ID.
+
+        Modifies logits in-place and returns argmax of penalized logits.
+        """
+        token_counts = {}
+        for tid in generated_ids:
+            token_counts[tid] = token_counts.get(tid, 0) + 1
+
+        for tid, count in token_counts.items():
+            if repetition_penalty != 1.0:
+                if logits[tid] > 0:
+                    logits[tid] /= repetition_penalty
+                else:
+                    logits[tid] *= repetition_penalty
+            if presence_penalty != 0.0:
+                logits[tid] -= presence_penalty
+            if frequency_penalty != 0.0:
+                logits[tid] -= frequency_penalty * count
+
+        return int(np.argmax(logits))
 
     # ── Prefill: process prompt tokens ───────────────────────────────
     #
@@ -757,7 +861,7 @@ class ChatEngine:
                     return None
                 is_last = (ti == n_remaining - 1)
                 if is_last:
-                    last_next = self._step(tok_id, self.pos)
+                    last_next, _ = self._step(tok_id, self.pos)
                 else:
                     self._step_kv_only(tok_id, self.pos)
                 self.pos += 1
@@ -865,17 +969,26 @@ class ChatEngine:
         tokens += [t["im_start"]] + t["assistant"] + nl  # assistant prompt
         if enable_thinking:
             tokens += [t["think"]] + nl
+        else:
+            # Empty think block: <think>\n\n</think>\n\n
+            tokens += [t["think"]] + nl + nl + [t["endthink"]] + nl + nl
         return tokens
 
     # ── Main chat stream ─────────────────────────────────────────────
 
-    def chat_stream(self, user_msg, max_tokens=512, enable_thinking=True):
+    def chat_stream(self, user_msg, max_tokens=512,
+                     enable_thinking=True, repetition_guard=True,
+                     repetition_penalty=1.0, presence_penalty=0.0,
+                     frequency_penalty=0.0):
         """Generator yielding SSE events for a streaming response.
 
         Two-phase pipeline:
           1. PREFILL — process prompt tokens (sequentially, in 256-tok blocks)
           2. DECODE  — generate response tokens one at a time
         Both phases use the same infer-function models. No switching.
+
+        repetition_guard: if True, stops generation early when n-gram
+        repetition is detected (sliding-window 5-gram, threshold=3).
         """
         with self.lock:
             is_first_turn = len(self.messages) == 0
@@ -925,17 +1038,41 @@ class ChatEngine:
                 return
 
             # ── DECODE PHASE ──
+            rep_detector = RepetitionDetector() if repetition_guard else None
             generated_ids = [last_next]
+            if rep_detector:
+                rep_detector.add_token(last_next)
             text_so_far = self.tokenizer.decode(
                 [last_next], skip_special_tokens=False)
             yield {"type": "token", "text": text_so_far, "id": last_next}
 
+            has_penalties = (repetition_penalty > 1.0
+                             or presence_penalty != 0.0
+                             or frequency_penalty != 0.0)
+            if has_penalties and self.lmhead_mode == "logits":
+                print(f"[decode] Penalties: rep={repetition_penalty}, "
+                      f"pres={presence_penalty}, freq={frequency_penalty}")
+            stopped_by_rep = False
             for gi in range(max_tokens - 1):
                 if self.pos >= self.ctx - 1:
                     break
-                next_id = self._step(generated_ids[-1], self.pos)
+                next_id, logits = self._step(generated_ids[-1], self.pos)
                 self.pos += 1
+                if logits is not None and has_penalties:
+                    next_id = self._apply_penalties(
+                        logits, generated_ids,
+                        repetition_penalty, presence_penalty,
+                        frequency_penalty)
                 generated_ids.append(next_id)
+
+                if rep_detector and rep_detector.add_token(next_id):
+                    stopped_by_rep = True
+                    print(f"[decode] Repetition detected at token {gi+2}, "
+                          f"stopping generation")
+                    break
+
+                if next_id in self.stop_ids:
+                    break
 
                 new_text = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=False)
@@ -943,9 +1080,6 @@ class ChatEngine:
                 text_so_far = new_text
                 if delta:
                     yield {"type": "token", "text": delta, "id": next_id}
-
-                if next_id in self.stop_ids:
-                    break
 
             elapsed = time.time() - t0
             decode_count = len(generated_ids)
@@ -962,15 +1096,22 @@ class ChatEngine:
                     "role": "assistant",
                     "content": full_text})
 
+            stop_reason = ("repetition" if stopped_by_rep
+                          else "eos" if (generated_ids
+                                         and generated_ids[-1]
+                                         in self.stop_ids)
+                          else "length")
             print(f"[decode] {decode_count} tok in {elapsed:.1f}s, "
                   f"pos={self.pos}/{self.ctx} "
-                  f"({self.pos*100//self.ctx}%)")
+                  f"({self.pos*100//self.ctx}%), "
+                  f"stop={stop_reason}")
 
             yield {
                 "type": "done",
                 "decode_tokens": decode_count,
                 "end_pos": self.pos,
                 "elapsed": round(elapsed, 1),
+                "stop_reason": stop_reason,
             }
 
 
@@ -1037,6 +1178,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             max_tokens = min(int(data.get("max_tokens", 512)), 2048)
             enable_thinking = data.get("enable_thinking", True)
+            repetition_guard = data.get("repetition_guard", True)
+            repetition_penalty = float(data.get("repetition_penalty", 1.0))
+            presence_penalty = float(data.get("presence_penalty", 0.0))
+            frequency_penalty = float(data.get("frequency_penalty", 0.0))
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1046,7 +1191,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 
             try:
                 for event in engine.chat_stream(
-                        message, max_tokens, enable_thinking):
+                        message, max_tokens, enable_thinking,
+                        repetition_guard,
+                        repetition_penalty, presence_penalty,
+                        frequency_penalty):
                     line = f"data: {json.dumps(event)}\n\n"
                     self.wfile.write(line.encode())
                     self.wfile.flush()
