@@ -1,0 +1,50 @@
+[
+  {
+    "baseline": "stable",
+    "experiment": "batch512_ctx1024",
+    "turns": [
+      {
+        "turn": 1,
+        "baseline_prompt": 18,
+        "exp_prompt": 18,
+        "match_pct": 15.0,
+        "first_diff_pos": 3,
+        "baseline_elapsed": 5.0,
+        "exp_elapsed": 11.26,
+        "baseline_tok_s": 4.0,
+        "exp_tok_s": 1.8
+      },
+      {
+        "turn": 2,
+        "baseline_prompt": 58,
+        "exp_prompt": 58,
+        "match_pct": 100.0,
+        "first_diff_pos": null,
+        "baseline_elapsed": 15.06,
+        "exp_elapsed": 19.93,
+        "baseline_tok_s": 1.3,
+        "exp_tok_s": 1.0
+      },
+      {
+        "turn": 3,
+        "baseline_prompt": 98,
+        "exp_prompt": 98,
+        "match_pct": 0.0,
+        "first_diff_pos": 0,
+        "baseline_elapsed": 20.99,
+        "exp_elapsed": 31.37,
+        "baseline_tok_s": 1.0,
+        "exp_tok_s": 0.6
+      }
+    ],
+    "all_match": false,
+    "config": "batch512_ctx1024",
+    "status": "DIVERGED",
+    "baseline_load_s": 130.9,
+    "exp_load_s": 113.3,
+    "cfg": {
+      "BATCH_SIZE": 512,
+      "CTX": 1024
+    }
+  }
+]
