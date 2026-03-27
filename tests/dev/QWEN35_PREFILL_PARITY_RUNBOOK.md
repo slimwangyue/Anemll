@@ -1061,6 +1061,14 @@ Three independent diagnostic scripts confirmed the fix:
 
 #### 11.11.5 Final Test Results
 
+Scope note (important): These 100% fresh-vs-incremental results were produced
+with `tests/dev/_test_multiround_conversation.py` under its own test harness
+settings (`CTX=256`, locally exported `ffn_LUT4_chunk*` models in
+`/tmp/lut_vs_nolut_export`). They are not a direct claim about
+`scripts_qwen3_5/chat_server.py` with milestone artifacts (for example,
+`qwen35_milestone1_3`, `CTX=1024`) unless that exact runtime path is
+re-validated separately.
+
 ```
   VERDICT
   Turn 1: fresh vs incremental = 40/40 (100%) [PASS]

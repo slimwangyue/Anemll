@@ -2060,9 +2060,21 @@ class Qwen35ForCausalLM(nn.Module):
         super().__init__()
         self.config = config
         self.model = Qwen35Model(config)
-        self.lm_head = nn.Conv2d(
-            config.hidden_size, config.vocab_size, 1, bias=False, dtype=MODEL_DTYPE
-        ).to(TEST_DEVICE)
+
+        # 16-way split lm_head for iPhone compatibility.
+        # A single Conv2d(hidden_size, vocab_size) produces a ~2.5 GB
+        # constexpr_lut_to_dense weight in the CoreML MIL, which exceeds
+        # iOS memory limits during ANE/GPU/CPU plan compilation.
+        # Splitting into 16 smaller Conv2d layers keeps each weight under
+        # ~160 MB, fitting comfortably in iPhone memory.
+        self.lm_head_split = 16
+        vocab_split = config.vocab_size // self.lm_head_split
+        vocab_remainder = config.vocab_size % self.lm_head_split
+        for i in range(self.lm_head_split):
+            split_size = vocab_split + (1 if i < vocab_remainder else 0)
+            setattr(self, f"lm_head16_{i+1}",
+                    nn.Conv2d(config.hidden_size, split_size, 1, bias=False,
+                              dtype=MODEL_DTYPE).to(TEST_DEVICE))
 
     def _compatibility_report(self, model_path: str) -> Tuple[bool, List[str]]:
         errors: List[str] = []
@@ -2181,7 +2193,16 @@ class Qwen35ForCausalLM(nn.Module):
                 if local_key.endswith(".self_attn.conv1d.weight"):
                     local_key = local_key.replace(".self_attn.conv1d.weight", ".self_attn.conv2d.weight")
             elif nk == "lm_head.weight":
-                local_key = "lm_head.weight"
+                # Split lm_head weight into 16 parts
+                w = self._reshape_if_conv_weight("lm_head.weight", v)  # [vocab, hidden, 1, 1]
+                vocab_split = self.config.vocab_size // self.lm_head_split
+                vocab_remainder = self.config.vocab_size % self.lm_head_split
+                split_sizes = [vocab_split + (1 if i < vocab_remainder else 0)
+                               for i in range(self.lm_head_split)]
+                splits = torch.split(w, split_sizes)
+                for i, s in enumerate(splits):
+                    mapped_state[f"lm_head16_{i+1}.weight"] = s
+                continue
             else:
                 # Unknown but language-related key, skip for now.
                 continue
@@ -2234,5 +2255,8 @@ class Qwen35ForCausalLM(nn.Module):
             current_pos=current_pos,
             IN_PREFILL=IN_PREFILL,
         )
-        logits = self.lm_head(hidden_states.permute(0, 2, 1).unsqueeze(2))
-        return logits.squeeze(2).permute(0, 2, 1)
+        h = hidden_states.permute(0, 2, 1).unsqueeze(2)
+        parts = [getattr(self, f"lm_head16_{i+1}")(h).squeeze(2).permute(0, 2, 1)
+                 for i in range(self.lm_head_split)]
+        logits = torch.cat(parts, dim=-1)
+        return logits

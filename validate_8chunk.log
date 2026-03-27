@@ -1,0 +1,135 @@
+================================================================================
+  Qwen3.5-4B Multi-Round Validation — Milestone 2.0
+  Model dir: /Users/yw68/Anemll/qwen3_5_8chunk_models
+  Config: LUT4, 4 chunks, CTX=1024
+  Tokens/turn: 40, Turns: 3
+================================================================================
+
+============================================================
+  Separate LUT4 — fresh
+============================================================
+
+  Separate LUT4 Turn 1 [fresh]: What is a stack in computer science?
+    [18 tok prompt, end_pos=58] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+
+  Separate LUT4 Turn 2 [fresh]: How does it compare to a queue?
+    [66 tok prompt, end_pos=106] rach-ererrewerbyyctoringarsany-S-sSorsy-–sS Silo--Sownyectorer-NNПиythtown
+
+  Separate LUT4 Turn 3 [fresh]: Give me a Python example of each.
+    [119 tok prompt, end_pos=159] burgerererzeedowninganda/orer-同类--__ities--同类tonoctorityyOingyDlySкуS--S孤儿/--
+
+============================================================
+  Separate LUT4 — incremental
+============================================================
+
+  Separate LUT4 Turn 1 [incremental]: What is a stack in computer science?
+    [start=0, 18 tok, end_pos=58] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+
+  Separate LUT4 Turn 2 [incremental]: How does it compare to a queue?
+    [start=58, 20 tok, end_pos=118] 不放/rog---Sorsor-erereraserthbb-......SS S...Sardnessityityжеes-‑erود
+
+ --‑er
+
+  Separate LUT4 Turn 3 [incremental]: Give me a Python example of each.
+    [start=118, 20 tok, end_pos=178]  ------>reeararкалаSSitererththzze相反--S-sSarsSSitsS egetoskeyythctorerseyy色/地__S特定-
+
+============================================================
+  Dedup LUT4 — fresh
+============================================================
+
+  Dedup LUT4 Turn 1 [fresh]: What is a stack in computer science?
+    [18 tok prompt, end_pos=58] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+
+  Dedup LUT4 Turn 2 [fresh]: How does it compare to a queue?
+    [66 tok prompt, end_pos=106] rach-ererrewerbyyctoringarsany-S-sSorsy-–sS Silo--Sownyectorer-NNПиythtown
+
+  Dedup LUT4 Turn 3 [fresh]: Give me a Python example of each.
+    [119 tok prompt, end_pos=159] burgerererzeedowninganda/orer-同类--__ities--同类tonoctorityyOingyDlySкуS--S孤儿/--
+
+============================================================
+  Dedup LUT4 — incremental
+============================================================
+
+  Dedup LUT4 Turn 1 [incremental]: What is a stack in computer science?
+    [start=0, 18 tok, end_pos=58] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+
+  Dedup LUT4 Turn 2 [incremental]: How does it compare to a queue?
+    [start=58, 20 tok, end_pos=118] 不放/rog---Sorsor-erereraserthbb-......SS S...Sardnessityityжеes-‑erود
+
+ --‑er
+
+  Dedup LUT4 Turn 3 [incremental]: Give me a Python example of each.
+    [start=118, 20 tok, end_pos=178]  ------>reeararкалаSSitererththzze相反--S-sSarsSSitsS egetoskeyythctorerseyy色/地__S特定-
+
+================================================================================
+  RESULTS
+================================================================================
+
+  Turn 1 (prompt: 18 tok, end_pos: 58)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                              842        1669            ---
+    Separate LUT4 incremental                        779        1674   40/40 (100%)
+    Dedup LUT4 fresh                                 840        1670   40/40 (100%)
+    Dedup LUT4 incremental                           830        1668   40/40 (100%)
+
+  Turn 2 (prompt: 66 tok, end_pos: 106)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                             2839        1669            ---
+    Separate LUT4 incremental                        861        1671      0/40 (0%)
+    Dedup LUT4 fresh                                2841        1676   40/40 (100%)
+    Dedup LUT4 incremental                           855        1735      0/40 (0%)
+
+  Turn 3 (prompt: 119 tok, end_pos: 159)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                             5113        1671            ---
+    Separate LUT4 incremental                        853        1665      2/40 (5%)
+    Dedup LUT4 fresh                                5134        1681   40/40 (100%)
+    Dedup LUT4 incremental                           898        1678      2/40 (5%)
+
+  — Generated Text —
+
+  Turn 1: What is a stack in computer science?
+    [Separate LUT4 fresh] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+    [Separate LUT4 incremental] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+    [Dedup LUT4 fresh] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+    [Dedup LUT4 incremental] 配置方面//же--S/-可--S--واس--S top--‑erer-erdingsyyth-erererererzees-
+
+  Turn 2: How does it compare to a queue?
+    [Separate LUT4 fresh] rach-ererrewerbyyctoringarsany-S-sSorsy-–sS Silo--Sownyectorer-NNПиythtown
+    [Separate LUT4 incremental] 不放/rog---Sorsor-erereraserthbb-......SS S...Sardnessityityжеes-‑erود
+
+ --‑er
+    [Dedup LUT4 fresh] rach-ererrewerbyyctoringarsany-S-sSorsy-–sS Silo--Sownyectorer-NNПиythtown
+    [Dedup LUT4 incremental] 不放/rog---Sorsor-erereraserthbb-......SS S...Sardnessityityжеes-‑erود
+
+ --‑er
+
+  Turn 3: Give me a Python example of each.
+    [Separate LUT4 fresh] burgerererzeedowninganda/orer-同类--__ities--同类tonoctorityyOingyDlySкуS--S孤儿/--
+    [Separate LUT4 incremental]  ------>reeararкалаSSitererththzze相反--S-sSarsSSitsS egetoskeyythctorerseyy色/地__S特定-
+    [Dedup LUT4 fresh] burgerererzeedowninganda/orer-同类--__ities--同类tonoctorityyOingyDlySкуS--S孤儿/--
+    [Dedup LUT4 incremental]  ------>reeararкалаSSitererththzze相反--S-sSarsSSitsS egetoskeyythctorerseyy色/地__S特定-
+
+================================================================================
+  VERDICT
+================================================================================
+  Turn 1: dedup fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 2: dedup fresh vs incremental = 0/40 (0%) [FAIL]
+  Turn 3: dedup fresh vs incremental = 2/40 (5%) [FAIL]
+
+  Turn 1: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+  Turn 2: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+  Turn 3: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+
+  Turn 1: separate fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 2: separate fresh vs incremental = 0/40 (0%) [FAIL]
+  Turn 3: separate fresh vs incremental = 2/40 (5%) [FAIL]
+
+  Turn 1: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+  Turn 2: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+  Turn 3: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+
+  SOME CHECKS FAILED — investigation needed

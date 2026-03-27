@@ -109,23 +109,27 @@ class SeparateEngine:
                 os.path.join(model_dir, f"ffn_{label}_chunk{ci}.mlpackage"),
                 compute_units=compute_unit)
             self.ffns.append(m)
-        spec = self.ffns[0].get_spec()
-        self.inp_map = {}
-        for inp in spec.description.input:
-            try:
-                self.inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
-            except Exception:
-                pass
+        self.inp_maps = []
+        for ci in range(NUM_CHUNKS):
+            spec = self.ffns[ci].get_spec()
+            imap = {}
+            for inp in spec.description.input:
+                try:
+                    imap[inp.name] = tuple(inp.type.multiArrayType.shape)
+                except Exception:
+                    pass
+            self.inp_maps.append(imap)
+        self.inp_map = self.inp_maps[0]  # backward compat
         self.has_linear = 'linear_conv_state' in self.inp_map
         self.reset_all()
 
     def reset_all(self):
         self.states = [m.make_state() for m in self.ffns]
         if self.has_linear:
-            self.lin_convs = [np.zeros(self.inp_map['linear_conv_state'], dtype=np.float16)
-                              for _ in range(NUM_CHUNKS)]
-            self.lin_recs = [np.zeros(self.inp_map['linear_recurrent_state'], dtype=np.float16)
-                             for _ in range(NUM_CHUNKS)]
+            self.lin_convs = [np.zeros(self.inp_maps[ci]['linear_conv_state'], dtype=np.float16)
+                              for ci in range(NUM_CHUNKS)]
+            self.lin_recs = [np.zeros(self.inp_maps[ci]['linear_recurrent_state'], dtype=np.float16)
+                             for ci in range(NUM_CHUNKS)]
         else:
             self.lin_convs = [None] * NUM_CHUNKS
             self.lin_recs = [None] * NUM_CHUNKS
@@ -199,30 +203,34 @@ class DedupEngine:
                 os.path.join(combined_dir, f"chunk{ci}.mlpackage"),
                 compute_units=compute_unit, function_name="infer")
             self.ffns.append(m)
-        spec = self.ffns[0].get_spec()
-        self.inp_map = {}
-        fn_inputs = None
-        for fn in spec.description.functions:
-            if fn.name == "infer":
-                fn_inputs = fn.input
-                break
-        if fn_inputs is None:
-            fn_inputs = spec.description.input
-        for inp in fn_inputs:
-            try:
-                self.inp_map[inp.name] = tuple(inp.type.multiArrayType.shape)
-            except Exception:
-                pass
+        self.inp_maps = []
+        for ci in range(NUM_CHUNKS):
+            spec = self.ffns[ci].get_spec()
+            imap = {}
+            fn_inputs = None
+            for fn in spec.description.functions:
+                if fn.name == "infer":
+                    fn_inputs = fn.input
+                    break
+            if fn_inputs is None:
+                fn_inputs = spec.description.input
+            for inp in fn_inputs:
+                try:
+                    imap[inp.name] = tuple(inp.type.multiArrayType.shape)
+                except Exception:
+                    pass
+            self.inp_maps.append(imap)
+        self.inp_map = self.inp_maps[0]  # backward compat
         self.has_linear = 'linear_conv_state' in self.inp_map
         self.reset_all()
 
     def reset_all(self):
         self.states = [m.make_state() for m in self.ffns]
         if self.has_linear:
-            self.lin_convs = [np.zeros(self.inp_map['linear_conv_state'], dtype=np.float16)
-                              for _ in range(NUM_CHUNKS)]
-            self.lin_recs = [np.zeros(self.inp_map['linear_recurrent_state'], dtype=np.float16)
-                             for _ in range(NUM_CHUNKS)]
+            self.lin_convs = [np.zeros(self.inp_maps[ci]['linear_conv_state'], dtype=np.float16)
+                              for ci in range(NUM_CHUNKS)]
+            self.lin_recs = [np.zeros(self.inp_maps[ci]['linear_recurrent_state'], dtype=np.float16)
+                             for ci in range(NUM_CHUNKS)]
         else:
             self.lin_convs = [None] * NUM_CHUNKS
             self.lin_recs = [None] * NUM_CHUNKS
@@ -414,12 +422,6 @@ def main():
         print(f"  Separate {label} — incremental")
         print(f"{'='*60}")
         sep_engine.reset_all()
-        sep_engine.states = [m.make_state() for m in sep_engine.ffns]
-        if sep_engine.has_linear:
-            sep_engine.lin_convs = [np.zeros(sep_engine.inp_map['linear_conv_state'], dtype=np.float16)
-                                    for _ in range(NUM_CHUNKS)]
-            sep_engine.lin_recs = [np.zeros(sep_engine.inp_map['linear_recurrent_state'], dtype=np.float16)
-                                   for _ in range(NUM_CHUNKS)]
         sep_inc = run_incremental(sep_engine, tokenizer, tpl_tokens,
                                   CONVERSATION_TURNS, args.tokens, stop_ids, f"Separate {label}")
         all_configs.append((f"Separate {label} incremental", sep_inc))

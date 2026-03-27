@@ -1,0 +1,127 @@
+================================================================================
+  Qwen3.5-4B Multi-Round Validation — Milestone 2.0
+  Model dir: /Users/yw68/Anemll/qwen3_5_6chunk_models
+  Config: LUT4, 4 chunks, CTX=1024
+  Tokens/turn: 40, Turns: 3
+================================================================================
+
+============================================================
+  Separate LUT4 — fresh
+============================================================
+
+  Separate LUT4 Turn 1 [fresh]: What is a stack in computer science?
+    [18 tok prompt, end_pos=58] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+
+  Separate LUT4 Turn 2 [fresh]: How does it compare to a queue?
+    [73 tok prompt, end_pos=113]  badaesyyieldsedryyReranda/orerorativarosososyRRororееaOososyctererühingyyW Wsตัน
+
+  Separate LUT4 Turn 3 [fresh]: Give me a Python example of each.
+    [129 tok prompt, end_pos=169] akanrRororativsionalrorativsitanarreererativsionalerockaa ​​ поздноesososaisisososyRRtrtrtyt
+
+============================================================
+  Separate LUT4 — incremental
+============================================================
+
+  Separate LUT4 Turn 1 [incremental]: What is a stack in computer science?
+    [start=0, 18 tok, end_pos=58] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+
+  Separate LUT4 Turn 2 [incremental]: How does it compare to a queue?
+    [start=58, 20 tok, end_pos=118] seyrodeosyRastaosososososibilitiesitiesesososososzczosyieldsahausenearoososososaisisisismétuOares
+
+  Separate LUT4 Turn 3 [incremental]: Give me a Python example of each.
+    [start=118, 20 tok, end_pos=178] MarkedlyantlyingusementmRroaoratraonrionalrorontoososososososos的一定是如此器的ontouHsRorontoжеSaTt же
+
+============================================================
+  Dedup LUT4 — fresh
+============================================================
+
+  Dedup LUT4 Turn 1 [fresh]: What is a stack in computer science?
+    [18 tok prompt, end_pos=58] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+
+  Dedup LUT4 Turn 2 [fresh]: How does it compare to a queue?
+    [73 tok prompt, end_pos=113]  badaesyyieldsedryyReranda/orerorativarosososyRRororееaOososyctererühingyyW Wsตัน
+
+  Dedup LUT4 Turn 3 [fresh]: Give me a Python example of each.
+    [129 tok prompt, end_pos=169] akanrRororativsionalrorativsitanarreererativsionalerockaa ​​ поздноesososaisisososyRRtrtrtyt
+
+============================================================
+  Dedup LUT4 — incremental
+============================================================
+
+  Dedup LUT4 Turn 1 [incremental]: What is a stack in computer science?
+    [start=0, 18 tok, end_pos=58] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+
+  Dedup LUT4 Turn 2 [incremental]: How does it compare to a queue?
+    [start=58, 20 tok, end_pos=118] seyrodeosyRastaosososososibilitiesitiesesososososzczosyieldsahausenearoososososaisisisismétuOares
+
+  Dedup LUT4 Turn 3 [incremental]: Give me a Python example of each.
+    [start=118, 20 tok, end_pos=178] MarkedlyantlyingusementmRroaoratraonrionalrorontoososososososos的一定是如此器的ontouHsRorontoжеSaTt же
+
+================================================================================
+  RESULTS
+================================================================================
+
+  Turn 1 (prompt: 18 tok, end_pos: 58)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                             1139        2215            ---
+    Separate LUT4 incremental                       1034        2235   40/40 (100%)
+    Dedup LUT4 fresh                                1144        2210   40/40 (100%)
+    Dedup LUT4 incremental                          1147        2199   40/40 (100%)
+
+  Turn 2 (prompt: 73 tok, end_pos: 113)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                             4145        2219            ---
+    Separate LUT4 incremental                       1147        2212     5/40 (12%)
+    Dedup LUT4 fresh                                4124        2229   40/40 (100%)
+    Dedup LUT4 incremental                          1120        2193     5/40 (12%)
+
+  Turn 3 (prompt: 129 tok, end_pos: 169)
+    Config                                   Prefill(ms)  Decode(ms)          Match
+    ------------------------------------------------------------------------------
+    Separate LUT4 fresh                             7330        2198            ---
+    Separate LUT4 incremental                       1142        2233      1/40 (2%)
+    Dedup LUT4 fresh                                7371        2222   40/40 (100%)
+    Dedup LUT4 incremental                          1122        2189      1/40 (2%)
+
+  — Generated Text —
+
+  Turn 1: What is a stack in computer science?
+    [Separate LUT4 fresh] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+    [Separate LUT4 incremental] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+    [Dedup LUT4 fresh] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+    [Dedup LUT4 incremental] 糟乎人心的edlyweiseisandsandsosososososososadamenteofa-fsyRNtruberer是什么意思？抱歉乎sAaIyyRiRoronto
+
+  Turn 2: How does it compare to a queue?
+    [Separate LUT4 fresh]  badaesyyieldsedryyReranda/orerorativarosososyRRororееaOososyctererühingyyW Wsตัน
+    [Separate LUT4 incremental] seyrodeosyRastaosososososibilitiesitiesesososososzczosyieldsahausenearoososososaisisisismétuOares
+    [Dedup LUT4 fresh]  badaesyyieldsedryyReranda/orerorativarosososyRRororееaOososyctererühingyyW Wsตัน
+    [Dedup LUT4 incremental] seyrodeosyRastaosososososibilitiesitiesesososososzczosyieldsahausenearoososososaisisisismétuOares
+
+  Turn 3: Give me a Python example of each.
+    [Separate LUT4 fresh] akanrRororativsionalrorativsitanarreererativsionalerockaa ​​ поздноesososaisisososyRRtrtrtyt
+    [Separate LUT4 incremental] MarkedlyantlyingusementmRroaoratraonrionalrorontoososososososos的一定是如此器的ontouHsRorontoжеSaTt же
+    [Dedup LUT4 fresh] akanrRororativsionalrorativsitanarreererativsionalerockaa ​​ поздноesososaisisososyRRtrtrtyt
+    [Dedup LUT4 incremental] MarkedlyantlyingusementmRroaoratraonrionalrorontoososososososos的一定是如此器的ontouHsRorontoжеSaTt же
+
+================================================================================
+  VERDICT
+================================================================================
+  Turn 1: dedup fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 2: dedup fresh vs incremental = 5/40 (12%) [FAIL]
+  Turn 3: dedup fresh vs incremental = 1/40 (2%) [FAIL]
+
+  Turn 1: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+  Turn 2: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+  Turn 3: separate vs dedup (fresh) = 40/40 (100%) [PASS]
+
+  Turn 1: separate fresh vs incremental = 40/40 (100%) [PASS]
+  Turn 2: separate fresh vs incremental = 5/40 (12%) [FAIL]
+  Turn 3: separate fresh vs incremental = 1/40 (2%) [FAIL]
+
+  Turn 1: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+  Turn 2: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+  Turn 3: separate vs dedup (incremental) = 40/40 (100%) [PASS]
+
+  SOME CHECKS FAILED — investigation needed

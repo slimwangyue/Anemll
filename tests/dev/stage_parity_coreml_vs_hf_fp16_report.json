@@ -1,0 +1,252 @@
+{
+  "prompt": "教我做红烧肉",
+  "ctx": 1024,
+  "num_chunks": 4,
+  "chunk_layer_counts": [
+    8,
+    8,
+    8,
+    8
+  ],
+  "hf_num_layers": 32,
+  "runs": [
+    {
+      "enable_thinking": false,
+      "prompt_len": 16,
+      "first_token": {
+        "coreml_first": 109266,
+        "hf_first": 126114,
+        "match": false
+      },
+      "decode_parity": {
+        "a_len": 48,
+        "b_len": 48,
+        "common_len": 48,
+        "match_count": 0,
+        "match_ratio": 0.0,
+        "first_divergence_index": 0
+      },
+      "coreml_decode_error": null,
+      "stage_metrics": {
+        "embedding_last_step": {
+          "max_abs": 0.0325927734375,
+          "mean_abs": 0.0013606195570901036,
+          "cosine": 0.9931315779685974
+        },
+        "chunk0_boundary": {
+          "max_abs": 0.826171875,
+          "mean_abs": 0.04756878316402435,
+          "cosine": 0.8595197796821594
+        },
+        "chunk0_hf_layer_index": 8,
+        "chunk1_boundary": {
+          "max_abs": 0.744140625,
+          "mean_abs": 0.07898849248886108,
+          "cosine": 0.8435220718383789
+        },
+        "chunk1_hf_layer_index": 16,
+        "chunk2_boundary": {
+          "max_abs": 3.017578125,
+          "mean_abs": 0.23713460564613342,
+          "cosine": 0.7970389723777771
+        },
+        "chunk2_hf_layer_index": 24,
+        "chunk3_boundary": {
+          "max_abs": 9.984375,
+          "mean_abs": 1.874375581741333,
+          "cosine": 0.7342624664306641
+        },
+        "chunk3_hf_layer_index": 32
+      },
+      "hf_first_32": [
+        126114,
+        3709,
+        95933,
+        96481,
+        108941,
+        10992,
+        271,
+        248068,
+        271,
+        248069,
+        271,
+        99236,
+        3709,
+        100736,
+        99250,
+        96074,
+        109743,
+        2005,
+        96662,
+        96399,
+        97748,
+        828,
+        99702,
+        6115,
+        9008,
+        235,
+        119,
+        271,
+        98609,
+        97698,
+        103712,
+        95836
+      ],
+      "coreml_first_32": [
+        109266,
+        6115,
+        97698,
+        14791,
+        220,
+        110257,
+        3709,
+        95815,
+        332,
+        96849,
+        5205,
+        109179,
+        332,
+        96988,
+        104985,
+        96146,
+        126114,
+        97024,
+        1710,
+        271,
+        332,
+        97494,
+        98293,
+        245342,
+        198,
+        16,
+        13,
+        220,
+        2972,
+        148013,
+        97328,
+        111832
+      ],
+      "hf_text_preview": "红烧，你吃了吗？\n\n<think>\n\n</think>\n\n哈哈，看来你是想跟我“云干杯”啦！🍻\n\n不过作为一个人工智能，我虽然没有实体去吃饭，但我已经“吃”过无数人类",
+      "coreml_text_preview": "你好！作为 AI 助手，我**不能、也不能**直接教你做红烧肉。\n\n**原因如下：**\n1.  **我无法执行烹饪操作**：我是一个人工智能模型，没有实体身体，无法像人类厨师一样"
+    },
+    {
+      "enable_thinking": true,
+      "prompt_len": 14,
+      "first_token": {
+        "coreml_first": 8160,
+        "hf_first": 8160,
+        "match": true
+      },
+      "decode_parity": {
+        "a_len": 48,
+        "b_len": 48,
+        "common_len": 48,
+        "match_count": 2,
+        "match_ratio": 0.041666666666666664,
+        "first_divergence_index": 1
+      },
+      "coreml_decode_error": null,
+      "stage_metrics": {
+        "embedding_last_step": {
+          "max_abs": 0.039703369140625,
+          "mean_abs": 0.0014494358329102397,
+          "cosine": 0.9915087819099426
+        },
+        "chunk0_boundary": {
+          "max_abs": 0.232421875,
+          "mean_abs": 0.046113740652799606,
+          "cosine": 0.8773086071014404
+        },
+        "chunk0_hf_layer_index": 8,
+        "chunk1_boundary": {
+          "max_abs": 0.8310546875,
+          "mean_abs": 0.06793036311864853,
+          "cosine": 0.8174003958702087
+        },
+        "chunk1_hf_layer_index": 16,
+        "chunk2_boundary": {
+          "max_abs": 1.33203125,
+          "mean_abs": 0.18901637196540833,
+          "cosine": 0.7788127660751343
+        },
+        "chunk2_hf_layer_index": 24,
+        "chunk3_boundary": {
+          "max_abs": 17.330078125,
+          "mean_abs": 2.315455198287964,
+          "cosine": 0.5731778144836426
+        },
+        "chunk3_hf_layer_index": 32
+      },
+      "hf_first_32": [
+        8160,
+        369,
+        264,
+        61446,
+        11782,
+        314,
+        279,
+        1328,
+        3387,
+        494,
+        279,
+        3766,
+        1414,
+        25,
+        271,
+        16,
+        13,
+        2972,
+        760,
+        87643,
+        23010,
+        92217,
+        561,
+        1414,
+        33194,
+        279,
+        30744,
+        12263,
+        314,
+        279,
+        3788,
+        11
+      ],
+      "coreml_first_32": [
+        8160,
+        579,
+        264,
+        7047,
+        1817,
+        421,
+        11177,
+        310,
+        279,
+        11488,
+        1965,
+        25,
+        271,
+        16,
+        13,
+        220,
+        2972,
+        2014,
+        53983,
+        279,
+        5952,
+        64700,
+        198,
+        262,
+        348,
+        256,
+        2972,
+        1421,
+        579,
+        38622,
+        64700,
+        74829
+      ],
+      "hf_text_preview": "Here is a concise summary of the key points from the provided text:\n\n1. **Theoretical Framework**: The text discusses the theoretical framework of the study, which is based on the **Theory of Planned Behavior (TPB)**. This theory",
+      "coreml_text_preview": "Here's a thinking process that leads to the suggested response:\n\n1.  **Analyze the Request:**\n    *   **User's Goal:** Wants to learn how to make \"Red Braised Pork\" (红烧肉 - H"
+    }
+  ]
+}

@@ -45,18 +45,18 @@ def export_embeddings(model, out_dir, skip_existing):
 
 
 def export_lm_head(model, out_dir, skip_existing):
-    path = os.path.join(out_dir, "lm_head.mlpackage")
+    path = os.path.join(out_dir, "lm_head_logits.mlpackage")
     if skip_existing and os.path.exists(path):
-        print(f"  [skip] lm_head")
+        print(f"  [skip] lm_head_logits")
         return
-    print(f"  Exporting lm_head (LUT{LM_HEAD_LUT})...")
+    print(f"  Exporting lm_head_logits 16-way split (LUT{LM_HEAD_LUT})...")
     t0 = time.time()
     conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
                            num_chunks=NUM_CHUNKS, lut_bits=LM_HEAD_LUT, per_channel=PER_CHANNEL)
     ml = conv.convert_part_3(model, argmax_in_model=False)
     ml.save(path)
     del ml, conv; gc.collect()
-    print(f"  Saved lm_head ({time.time()-t0:.1f}s)")
+    print(f"  Saved lm_head_logits ({time.time()-t0:.1f}s)")
 
 
 def export_ffn_chunks(model, out_dir, skip_existing):

@@ -141,9 +141,11 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <label>Show thinking: <input type="checkbox" id="showThink" checked></label>
   <label>Thinking mode: <input type="checkbox" id="enableThinking" checked></label>
   <label>Repetition guard: <input type="checkbox" id="repGuard" checked></label>
-  <label>Rep penalty: <input type="number" id="repPenalty" value="1.0" min="1.0" max="2.0" step="0.05"></label>
+  <label>Temperature: <input type="number" id="temperature" value="0.7" min="0.0" max="2.0" step="0.05"></label>
+  <label>Top-p: <input type="number" id="topP" value="0.9" min="0.0" max="1.0" step="0.05"></label>
+  <label>Rep penalty: <input type="number" id="repPenalty" value="1.1" min="1.0" max="2.0" step="0.05"></label>
   <label>Pres penalty: <input type="number" id="presPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
-  <label>Freq penalty: <input type="number" id="freqPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
+  <label>Freq penalty: <input type="number" id="freqPenalty" value="0.2" min="0.0" max="2.0" step="0.1"></label>
 </div>
 <div id="chat"></div>
 <div class="typing" id="typing"></div>
@@ -223,7 +225,7 @@ async function sendMsg() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking, repetition_guard: document.getElementById('repGuard').checked, repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.0, presence_penalty: parseFloat(document.getElementById('presPenalty').value) || 0.0, frequency_penalty: parseFloat(document.getElementById('freqPenalty').value) || 0.0})
+      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking, repetition_guard: document.getElementById('repGuard').checked, temperature: parseFloat(document.getElementById('temperature').value) || 0.7, top_p: parseFloat(document.getElementById('topP').value) || 0.9, repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.1, presence_penalty: parseFloat(document.getElementById('presPenalty').value) || 0.0, frequency_penalty: parseFloat(document.getElementById('freqPenalty').value) || 0.2})
     });
 
     const reader = resp.body.getReader();
@@ -481,12 +483,20 @@ class ChatEngine:
                                             or "output_logits" in out_names
                                             ) else "argmax"
             print(f"  Loaded lm_head (mode={self.lmhead_mode})")
-        # Resolve the actual logits output key
+        # Detect split logits (logits1..logitsN) vs single output
         if self.lmhead_mode == "logits":
             spec = self.lmhead.get_spec()
             out_names = [o.name for o in spec.description.output]
-            self.logits_key = ("output_logits" if "output_logits" in out_names
-                              else "logits")
+            split_keys = sorted([n for n in out_names if n.startswith("logits")
+                                 and n[6:].isdigit()])
+            if split_keys:
+                self.logits_keys = split_keys  # ["logits1", ..., "logits16"]
+                self.logits_key = None
+                print(f"  Split logits: {len(split_keys)}-way ({split_keys[0]}..{split_keys[-1]})")
+            else:
+                self.logits_keys = None
+                self.logits_key = ("output_logits" if "output_logits" in out_names
+                                  else "logits")
 
         print("[engine] Loading FFN chunks (infer + prefill)...")
         self.ffns = []       # infer instances  (seq_len=1)
@@ -627,6 +637,16 @@ class ChatEngine:
 
     # ── Core model step ──────────────────────────────────────────────
 
+    def _extract_logits(self, lm_out):
+        """Extract flattened fp32 logits from lm_head output.
+
+        Handles both split (logits1..logitsN) and single (logits/output_logits) formats.
+        """
+        if self.logits_keys:
+            parts = [lm_out[k].flatten().astype(np.float32) for k in self.logits_keys]
+            return np.concatenate(parts)
+        return lm_out[self.logits_key].flatten().astype(np.float32)
+
     def _step_kv_only(self, tok_id, pos):
         """Run one token through embed -> all FFN chunks (NO lm_head).
 
@@ -697,7 +717,7 @@ class ChatEngine:
         lm_out = self.lmhead.predict(
             {"hidden_states": hidden.astype(np.float16)})
         if self.lmhead_mode == "logits":
-            logits = lm_out[self.logits_key].flatten().astype(np.float32)
+            logits = self._extract_logits(lm_out)
             return int(np.argmax(logits)), logits
         return int(lm_out["argmax_idx"].flatten()[0]), None
 
@@ -763,7 +783,8 @@ class ChatEngine:
         lm_out = self.lmhead.predict(
             {"hidden_states": hidden.astype(np.float16)})
         if self.lmhead_mode == "logits":
-            next_id = int(np.argmax(lm_out[self.logits_key].flatten()))
+            logits = self._extract_logits(lm_out)
+            next_id = int(np.argmax(logits))
         else:
             next_id = int(lm_out["argmax_idx"].flatten()[0])
 
@@ -773,13 +794,16 @@ class ChatEngine:
     # ── Logit-space penalties ────────────────────────────────────────
 
     def _apply_penalties(self, logits, generated_ids,
-                         repetition_penalty=1.0,
+                         repetition_penalty=1.1,
                          presence_penalty=0.0,
-                         frequency_penalty=0.0):
-        """Apply repetition/presence/frequency penalties, return token ID.
+                         frequency_penalty=0.2,
+                         temperature=0.7,
+                         top_p=0.9):
+        """Apply penalties + temperature/top-p sampling, return token ID.
 
-        Modifies logits in-place and returns argmax of penalized logits.
+        Modifies logits in-place and returns sampled token ID.
         """
+        # 1. Repetition / presence / frequency penalties
         token_counts = {}
         for tid in generated_ids:
             token_counts[tid] = token_counts.get(tid, 0) + 1
@@ -795,7 +819,31 @@ class ChatEngine:
             if frequency_penalty != 0.0:
                 logits[tid] -= frequency_penalty * count
 
-        return int(np.argmax(logits))
+        # 2. Temperature + top-p (nucleus) sampling
+        if temperature <= 0 or top_p <= 0:
+            return int(np.argmax(logits))
+
+        logits_f = logits.astype(np.float64)
+        logits_f /= temperature
+
+        # Numerical stability
+        logits_f -= np.max(logits_f)
+        probs = np.exp(logits_f)
+        probs /= probs.sum()
+
+        # Top-p filtering
+        if top_p < 1.0:
+            sorted_idx = np.argsort(-probs)
+            sorted_probs = probs[sorted_idx]
+            cumsum = np.cumsum(sorted_probs)
+            # Keep tokens until cumulative prob exceeds top_p
+            cutoff = np.searchsorted(cumsum, top_p) + 1
+            mask = np.zeros_like(probs, dtype=bool)
+            mask[sorted_idx[:cutoff]] = True
+            probs[~mask] = 0.0
+            probs /= probs.sum()
+
+        return int(np.random.choice(len(probs), p=probs))
 
     # ── Prefill: process prompt tokens ───────────────────────────────
     #
@@ -978,8 +1026,9 @@ class ChatEngine:
 
     def chat_stream(self, user_msg, max_tokens=512,
                      enable_thinking=True, repetition_guard=True,
-                     repetition_penalty=1.0, presence_penalty=0.0,
-                     frequency_penalty=0.0):
+                     temperature=0.7, top_p=0.9,
+                     repetition_penalty=1.1, presence_penalty=0.0,
+                     frequency_penalty=0.2):
         """Generator yielding SSE events for a streaming response.
 
         Two-phase pipeline:
@@ -1048,10 +1097,13 @@ class ChatEngine:
 
             has_penalties = (repetition_penalty > 1.0
                              or presence_penalty != 0.0
-                             or frequency_penalty != 0.0)
+                             or frequency_penalty != 0.0
+                             or (temperature > 0 and temperature != 1.0)
+                             or (top_p > 0 and top_p < 1.0))
             if has_penalties and self.lmhead_mode == "logits":
-                print(f"[decode] Penalties: rep={repetition_penalty}, "
-                      f"pres={presence_penalty}, freq={frequency_penalty}")
+                print(f"[decode] Sampling: temp={temperature}, top_p={top_p}, "
+                      f"rep={repetition_penalty}, pres={presence_penalty}, "
+                      f"freq={frequency_penalty}")
             stopped_by_rep = False
             for gi in range(max_tokens - 1):
                 if self.pos >= self.ctx - 1:
@@ -1062,7 +1114,7 @@ class ChatEngine:
                     next_id = self._apply_penalties(
                         logits, generated_ids,
                         repetition_penalty, presence_penalty,
-                        frequency_penalty)
+                        frequency_penalty, temperature, top_p)
                 generated_ids.append(next_id)
 
                 if rep_detector and rep_detector.add_token(next_id):
@@ -1179,9 +1231,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             max_tokens = min(int(data.get("max_tokens", 512)), 2048)
             enable_thinking = data.get("enable_thinking", True)
             repetition_guard = data.get("repetition_guard", True)
-            repetition_penalty = float(data.get("repetition_penalty", 1.0))
+            temperature = float(data.get("temperature", 0.7))
+            top_p = float(data.get("top_p", 0.9))
+            repetition_penalty = float(data.get("repetition_penalty", 1.1))
             presence_penalty = float(data.get("presence_penalty", 0.0))
-            frequency_penalty = float(data.get("frequency_penalty", 0.0))
+            frequency_penalty = float(data.get("frequency_penalty", 0.2))
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1192,7 +1246,7 @@ class ChatHandler(BaseHTTPRequestHandler):
             try:
                 for event in engine.chat_stream(
                         message, max_tokens, enable_thinking,
-                        repetition_guard,
+                        repetition_guard, temperature, top_p,
                         repetition_penalty, presence_penalty,
                         frequency_penalty):
                     line = f"data: {json.dumps(event)}\n\n"

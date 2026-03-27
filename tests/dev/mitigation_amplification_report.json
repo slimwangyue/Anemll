@@ -1,0 +1,61 @@
+{
+  "model": "/Users/yw68/local_llm/models/Qwen__Qwen3.5-4B",
+  "seq_len": 256,
+  "ctx": 1024,
+  "results": [
+    {
+      "label": "A_baseline",
+      "status": "ok",
+      "cvt_sec": 25.73533296585083,
+      "cosine": 0.9955588587652405,
+      "max_abs": 0.302734375,
+      "mean_abs": 0.0037528364919126034,
+      "ch0_mean_abs": 0.13799667358398438
+    },
+    {
+      "label": "B_prescale_S8",
+      "status": "ok",
+      "cvt_sec": 28.609046936035156,
+      "cosine": 0.9998406630715025,
+      "max_abs": 0.453125,
+      "mean_abs": 0.00516080018132925,
+      "ch0_mean_abs": 0.34588623046875
+    },
+    {
+      "label": "C_direct_rmsnorm",
+      "status": "ok",
+      "cvt_sec": 28.29935097694397,
+      "cosine": 0.9955588617388437,
+      "max_abs": 0.302734375,
+      "mean_abs": 0.0037528355605900288,
+      "ch0_mean_abs": 0.13799667358398438
+    },
+    {
+      "label": "D_fp32_precision",
+      "status": "ok",
+      "cvt_sec": 13.462399959564209,
+      "cosine": 0.9999499882841214,
+      "max_abs": 0.0185546875,
+      "mean_abs": 0.0003873638925142586,
+      "ch0_mean_abs": 0.0089111328125
+    },
+    {
+      "label": "E_fp32_recurrence",
+      "status": "ok",
+      "cvt_sec": 28.28918218612671,
+      "cosine": 0.9955588587652405,
+      "max_abs": 0.302734375,
+      "mean_abs": 0.0037528364919126034,
+      "ch0_mean_abs": 0.13799667358398438
+    },
+    {
+      "label": "F_direct_rmsnorm_fp32",
+      "status": "ok",
+      "cvt_sec": 16.0250141620636,
+      "cosine": 0.9999501766152066,
+      "max_abs": 0.017578125,
+      "mean_abs": 0.0003866594342980534,
+      "ch0_mean_abs": 0.009029388427734375
+    }
+  ]
+}

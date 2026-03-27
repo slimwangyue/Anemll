@@ -1,0 +1,51 @@
+{
+  "model_a": "/Users/yw68/Anemll/qwen3_5_stable_models",
+  "model_b": "/Users/yw68/Anemll_remote_run/qwen35_milestone1_3",
+  "num_prompts": 5,
+  "successful_prompts": 3,
+  "total_common": 120,
+  "total_match": 120,
+  "overall_match_ratio": 1.0,
+  "items": [
+    {
+      "prompt": "What is the capital of France?",
+      "status": "failed",
+      "returncode": 245
+    },
+    {
+      "prompt": "Explain stack vs queue in one paragraph.",
+      "status": "ok",
+      "common_len": 40,
+      "matches": 40,
+      "match_ratio": 1.0,
+      "first_divergence_index": null,
+      "a_text": "<think>\n\n</think>\n\nBoth stack and queue are data structures used in computer programming, but they differ primarily in how they manage data entry and retrieval. A **stack** operates on a **Last-In,",
+      "b_text": "<think>\n\n</think>\n\nBoth stack and queue are data structures used in computer programming, but they differ primarily in how they manage data entry and retrieval. A **stack** operates on a **Last-In,"
+    },
+    {
+      "prompt": "Write a tiny Python factorial function.",
+      "status": "ok",
+      "common_len": 40,
+      "matches": 40,
+      "match_ratio": 1.0,
+      "first_divergence_index": null,
+      "a_text": "<think>\n\n</think>\n\nHere's a tiny, clean implementation of a factorial function in Python:\n\n```python\ndef factorial(n: int) -> int:\n    \"\"\"\n    Compute n! (",
+      "b_text": "<think>\n\n</think>\n\nHere's a tiny, clean implementation of a factorial function in Python:\n\n```python\ndef factorial(n: int) -> int:\n    \"\"\"\n    Compute n! ("
+    },
+    {
+      "prompt": "教我做红烧肉",
+      "status": "ok",
+      "common_len": 40,
+      "matches": 40,
+      "match_ratio": 1.0,
+      "first_divergence_index": null,
+      "a_text": "<think>\n\n</think>\n\n哈哈，这个“红烧肉”的比喻可太形象了！不过，红烧肉可不是真的用“红烧”做的菜哦，它可是用**红烧**（红烧",
+      "b_text": "<think>\n\n</think>\n\n哈哈，这个“红烧肉”的比喻可太形象了！不过，红烧肉可不是真的用“红烧”做的菜哦，它可是用**红烧**（红烧"
+    },
+    {
+      "prompt": "总结一下机器学习和深度学习的区别。",
+      "status": "failed",
+      "returncode": 245
+    }
+  ]
+}

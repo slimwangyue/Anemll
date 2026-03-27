@@ -19,6 +19,7 @@ private typealias Float16 = Float
     private var lmheadModel: MLModel!
     private var ffnChunks: [FFNChunk]!  // Use the FFNChunk defined in FFNChunk.swift
     private var state: MLState!
+    private var perChunkStates: [MLState] = []  // Per-chunk states for hybrid models (Qwen3.5)
     private let contextLength: Int
     private let batchSize: Int
     private var fullCausalMask: MLMultiArray?  // Optional - not needed for monolithic argmax models
@@ -87,6 +88,13 @@ private typealias Float16 = Float
     // Debug: KV cache state comparison
     // Since MLState is opaque, we verify state consistency by re-running inference
     private var debugSavedState: MLState?
+
+    // Qwen3.5 hybrid model linear states (conv + recurrent, per chunk)
+    private var hasLinearStates: Bool = false
+    private var linearConvStates: [MLMultiArray] = []
+    private var linearRecurrentStates: [MLMultiArray] = []
+    private var convStateShapes: [[NSNumber]] = []
+    private var recurrentStateShapes: [[NSNumber]] = []
 
     private let hiddenStateSimilarityThreshold: Float = 0.9999
     private let kvStateSimilarityThreshold: Float = 0.99999
@@ -334,15 +342,19 @@ private typealias Float16 = Float
         ]
     }
 
+    @discardableResult
     private func runStatefulPredictionOnQueue(
         model: MLModel,
         input: MLFeatureProvider,
-        options: MLPredictionOptions
-    ) throws {
+        options: MLPredictionOptions,
+        chunkState: MLState? = nil
+    ) throws -> MLFeatureProvider {
         var predictionError: Error?
-        predictionQueue.sync { [self] in
+        var result: MLFeatureProvider?
+        let useState = chunkState ?? state!
+        predictionQueue.sync {
             do {
-                _ = try model.prediction(from: input, using: state, options: options)
+                result = try model.prediction(from: input, using: useState, options: options)
             } catch {
                 predictionError = error
             }
@@ -350,6 +362,13 @@ private typealias Float16 = Float
         if let error = predictionError {
             throw error
         }
+        return result!
+    }
+
+    /// Returns the per-chunk MLState for the given index, or nil to use the shared state.
+    private func chunkStateFor(_ index: Int) -> MLState? {
+        guard hasLinearStates, index < perChunkStates.count else { return nil }
+        return perChunkStates[index]
     }
 
     private var monolithicHasRotationSupport: Bool {
@@ -844,6 +863,9 @@ private typealias Float16 = Float
 
         self.initState()
 
+        // Detect and initialize linear states for Qwen3.5 hybrid models
+        initLinearStatesIfNeeded()
+
         try initializeBackings()
 
         // Pre-allocate input tensors for sync argmax inference (eliminates allocation overhead)
@@ -1057,6 +1079,59 @@ private typealias Float16 = Float
         } else {
             self.state = ffnChunks[0].prefillModel.makeState()
         }
+        // For hybrid models: per-chunk states (each chunk may have different layer count)
+        if hasLinearStates {
+            perChunkStates = ffnChunks.map { $0.inferModel.makeState() }
+            resetLinearStates()
+        }
+    }
+
+    /// Detect whether FFN chunks require linear_conv_state / linear_recurrent_state inputs
+    /// (Qwen3.5 hybrid transformer/recurrent architecture).
+    private func initLinearStatesIfNeeded() {
+        guard let chunks = ffnChunks, !chunks.isEmpty else { return }
+        let firstInputs = chunks[0].inferModel.modelDescription.inputDescriptionsByName
+        guard firstInputs["linear_conv_state"] != nil else { return }
+
+        hasLinearStates = true
+        print("Detected linear states (Qwen3.5 hybrid model)")
+
+        // Detect per-chunk shapes from model spec
+        convStateShapes = chunks.map { chunk in
+            if let desc = chunk.inferModel.modelDescription.inputDescriptionsByName["linear_conv_state"],
+               let constraint = desc.multiArrayConstraint {
+                return constraint.shape
+            }
+            return [8, 1024, 32] as [NSNumber]  // fallback
+        }
+        recurrentStateShapes = chunks.map { chunk in
+            if let desc = chunk.inferModel.modelDescription.inputDescriptionsByName["linear_recurrent_state"],
+               let constraint = desc.multiArrayConstraint {
+                return constraint.shape
+            }
+            return [8, 32, 128, 128] as [NSNumber]  // fallback
+        }
+
+        resetLinearStates()
+    }
+
+    /// Zero-fill linear conv and recurrent state arrays for each chunk.
+    private func resetLinearStates() {
+        guard let chunks = ffnChunks else { return }
+        linearConvStates = (0..<chunks.count).map { ci in
+            let shape = ci < convStateShapes.count ? convStateShapes[ci] : [1] as [NSNumber]
+            let arr = (try? MLMultiArray(shape: shape, dataType: .float16)) ?? MLMultiArray()
+            let bytes = arr.count * 2  // fp16
+            memset(arr.dataPointer, 0, bytes)
+            return arr
+        }
+        linearRecurrentStates = (0..<chunks.count).map { ci in
+            let shape = ci < recurrentStateShapes.count ? recurrentStateShapes[ci] : [1] as [NSNumber]
+            let arr = (try? MLMultiArray(shape: shape, dataType: .float16)) ?? MLMultiArray()
+            let bytes = arr.count * 2
+            memset(arr.dataPointer, 0, bytes)
+            return arr
+        }
     }
 
     private func resetStateForPrefill() {
@@ -1067,6 +1142,10 @@ private typealias Float16 = Float
             state = chunks[0].inferModel.makeState()
         } else {
             state = chunks[0].prefillModel.makeState()
+        }
+        if hasLinearStates {
+            perChunkStates = chunks.map { $0.inferModel.makeState() }
+            resetLinearStates()
         }
         lastArgmaxPosition = -1
     }
@@ -1115,12 +1194,24 @@ private typealias Float16 = Float
         if argmaxInModel {
             print("Initializing LM head output backings for argmax mode (non-monolithic)")
 
-            // Create argmax_idx backing (int32) - model outputs int32 indices
-            let idxArray = try MLMultiArray(shape: [NSNumber(value: splitLMHead)], dataType: .int32)
+            // Create argmax_idx backing - use shape from model spec
+            let idxShape: [NSNumber]
+            if let desc = outputDescription["argmax_idx"], let constraint = desc.multiArrayConstraint {
+                idxShape = constraint.shape
+            } else {
+                idxShape = [NSNumber(value: splitLMHead)]
+            }
+            let idxArray = try MLMultiArray(shape: idxShape, dataType: .int32)
             outputBackingsDict["argmax_idx"] = idxArray
 
-            // Create argmax_val backing (fp16) - model outputs fp16 values
-            let valArray = try MLMultiArray(shape: [NSNumber(value: splitLMHead)], dataType: .float16)
+            // Create argmax_val backing - use shape from model spec
+            let valShape: [NSNumber]
+            if let desc = outputDescription["argmax_val"], let constraint = desc.multiArrayConstraint {
+                valShape = constraint.shape
+            } else {
+                valShape = [NSNumber(value: splitLMHead)]
+            }
+            let valArray = try MLMultiArray(shape: valShape, dataType: .float16)
             outputBackingsDict["argmax_val"] = valArray
 
             lmheadOutputBackings = outputBackingsDict
@@ -1764,26 +1855,53 @@ private typealias Float16 = Float
                 let currentPosArray = try MLMultiArray(shape: [1], dataType: .int32)
                 currentPosArray[0] = NSNumber(value: batchPos)
 
-                let prefillInput = try MLDictionaryFeatureProvider(dictionary: [
+                var prefillDict: [String: Any] = [
                     "hidden_states": currentHiddenStates,  // Shape: [1, 128, hidden_states]
                     "position_ids": positionIds,
                     "causal_mask": batchCausalMask,
                     "current_pos": currentPosArray
-                ])
+                ]
+                if hasLinearStates && index < linearConvStates.count {
+                    prefillDict["linear_conv_state"] = linearConvStates[index]
+                    prefillDict["linear_recurrent_state"] = linearRecurrentStates[index]
+                    // valid_len: number of real tokens in this batch (full batch = batchSize)
+                    let validLenArray = try MLMultiArray(shape: [1], dataType: .int32)
+                    validLenArray[0] = NSNumber(value: batchSize)
+                    prefillDict["valid_len"] = validLenArray
+                }
+                let prefillInput = try MLDictionaryFeatureProvider(dictionary: prefillDict)
 
                 // Use rotation function if available and batchPos >= slidingWindow
                 if useRotation, let prefillRotateModel = chunk.prefillRotateModel {
-                    try runStatefulPredictionOnQueue(
+                    let chunkOut = try runStatefulPredictionOnQueue(
                         model: prefillRotateModel,
                         input: prefillInput,
-                        options: ffnOptions
+                        options: ffnOptions,
+                        chunkState: chunkStateFor(index)
                     )
+                    if hasLinearStates && index < linearConvStates.count {
+                        if let convOut = chunkOut.featureValue(for: "linear_conv_state_out")?.multiArrayValue {
+                            linearConvStates[index] = convOut
+                        }
+                        if let recOut = chunkOut.featureValue(for: "linear_recurrent_state_out")?.multiArrayValue {
+                            linearRecurrentStates[index] = recOut
+                        }
+                    }
                 } else {
-                    try runStatefulPredictionOnQueue(
+                    let chunkOut = try runStatefulPredictionOnQueue(
                         model: chunk.prefillModel,
                         input: prefillInput,
-                        options: ffnOptions
+                        options: ffnOptions,
+                        chunkState: chunkStateFor(index)
                     )
+                    if hasLinearStates && index < linearConvStates.count {
+                        if let convOut = chunkOut.featureValue(for: "linear_conv_state_out")?.multiArrayValue {
+                            linearConvStates[index] = convOut
+                        }
+                        if let recOut = chunkOut.featureValue(for: "linear_recurrent_state_out")?.multiArrayValue {
+                            linearRecurrentStates[index] = recOut
+                        }
+                    }
                 }
                 await maybeDelayBeforeReadingPredictionOutputs()
 
@@ -2320,26 +2438,49 @@ private typealias Float16 = Float
                 ffnOptions.outputBackings = backings
             }
 
-            let inferInput = try MLDictionaryFeatureProvider(dictionary: [
+            var inputDict: [String: Any] = [
                 "hidden_states": currentHiddenStates,
                 "position_ids": positionIds,
                 "causal_mask": causalMask,
                 "current_pos": currentPosArray
-            ])
+            ]
+            if hasLinearStates && chunkIndex < linearConvStates.count {
+                inputDict["linear_conv_state"] = linearConvStates[chunkIndex]
+                inputDict["linear_recurrent_state"] = linearRecurrentStates[chunkIndex]
+            }
+            let inferInput = try MLDictionaryFeatureProvider(dictionary: inputDict)
 
             // Use rotation function if available and position >= slidingWindow
             if useRotation, let inferRotateModel = chunk.inferRotateModel {
-                try runStatefulPredictionOnQueue(
+                let chunkOut = try runStatefulPredictionOnQueue(
                     model: inferRotateModel,
                     input: inferInput,
-                    options: ffnOptions
+                    options: ffnOptions,
+                    chunkState: chunkStateFor(chunkIndex)
                 )
+                if hasLinearStates && chunkIndex < linearConvStates.count {
+                    if let convOut = chunkOut.featureValue(for: "linear_conv_state_out")?.multiArrayValue {
+                        linearConvStates[chunkIndex] = convOut
+                    }
+                    if let recOut = chunkOut.featureValue(for: "linear_recurrent_state_out")?.multiArrayValue {
+                        linearRecurrentStates[chunkIndex] = recOut
+                    }
+                }
             } else {
-                try runStatefulPredictionOnQueue(
+                let chunkOut = try runStatefulPredictionOnQueue(
                     model: chunk.inferModel,
                     input: inferInput,
-                    options: ffnOptions
+                    options: ffnOptions,
+                    chunkState: chunkStateFor(chunkIndex)
                 )
+                if hasLinearStates && chunkIndex < linearConvStates.count {
+                    if let convOut = chunkOut.featureValue(for: "linear_conv_state_out")?.multiArrayValue {
+                        linearConvStates[chunkIndex] = convOut
+                    }
+                    if let recOut = chunkOut.featureValue(for: "linear_recurrent_state_out")?.multiArrayValue {
+                        linearRecurrentStates[chunkIndex] = recOut
+                    }
+                }
             }
             await maybeDelayBeforeReadingPredictionOutputs()
 

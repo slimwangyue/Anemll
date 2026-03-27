@@ -1,0 +1,29 @@
+[engine] Loading tokenizer...
+[engine] Loading embeddings...
+[engine] Loading lm_head...
+  Loaded lm_head (mode=argmax)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (combined)... 19s
+  chunk 0 prefill (combined)... 88s
+  chunk 1 infer  (combined)... 19s
+  chunk 1 prefill (combined)... 93s
+  chunk 2 infer  (combined)... 23s
+  chunk 2 prefill (combined)... 102s
+  chunk 3 infer  (combined)... 23s
+  chunk 3 prefill (combined)... 102s
+[engine] Ready! CTX=1024, BATCH=256, crossover=32, mode=combined-dedup, prefill=batch-256, stop_ids={248044, 248046}
+[cache] Full reset. pos=0, messages=0
+
+============================================================
+[chat] Turn 1: "教我做红烧肉"
+[chat] prompt=14 tok, cache=0/1024 (0%), history=1 msg(s)
+[prefill] seq: 14 tok, 2853ms (5 tok/s), pos=14/1024
+[prefill] total: 14 tok in 2853ms (5 tok/s) [batch=0, seq=14]
+[decode] Repetition detected at token 97, stopping generation
+[decode] 97 tok in 13.6s, pos=110/1024 (10%), stop=repetition
+{
+  "stop_reason": "repetition",
+  "decode_tokens": 97,
+  "top_repeated_lines": [],
+  "text_preview": "Here's a thinking process that leads to the suggested response:\n\n1.  **Analyze the Request:**\n    *   **User's Goal:** Wants to learn how to make \"Red Braised Pork\" (红烧肉 - Hóngshuāng Ròu, or more commonly known as 红烧肉 in Chinese).\n    *   **Intent:** The user is asking for a recipe or guide on how to make this specific dish.\n    *  "
+}

@@ -743,17 +743,18 @@ class Qwen35Converter(BaseConverter):
         class LMHeadWrapper(torch.nn.Module):
             def __init__(self, model: Qwen35ForCausalLM, argmax_mode: bool = False) -> None:
                 super().__init__()
-                self.lm_head = model.lm_head
+                self.heads = [getattr(model, f"lm_head16_{i+1}") for i in range(model.lm_head_split)]
                 self.argmax_mode = argmax_mode
 
             def forward(self, hidden_states):
-                logits = self.lm_head(hidden_states.permute(0, 2, 1).unsqueeze(2))
-                logits = logits.squeeze(2).permute(0, 2, 1)
+                h = hidden_states.permute(0, 2, 1).unsqueeze(2)
+                logits_parts = [head(h).squeeze(2).permute(0, 2, 1) for head in self.heads]
                 if self.argmax_mode:
+                    logits = torch.cat(logits_parts, dim=-1)
                     argmax_idx = torch.argmax(logits, dim=-1).to(torch.int32)
                     argmax_val = torch.gather(logits, -1, argmax_idx.unsqueeze(-1)).squeeze(-1)
                     return argmax_idx, argmax_val
-                return logits
+                return tuple(logits_parts)
 
         wrapper = LMHeadWrapper(model, argmax_mode=argmax_in_model).eval()
         sample_input = torch.zeros((1, 1, model.config.hidden_size), dtype=MODEL_DTYPE, device=TEST_DEVICE)
@@ -766,7 +767,8 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="argmax_val", dtype=np.float16),
             ]
             if argmax_in_model
-            else [ct.TensorType(name="logits", dtype=np.float16)]
+            else [ct.TensorType(name=f"logits{i+1}", dtype=np.float16)
+                  for i in range(model.lm_head_split)]
         )
         mlmodel = ct.convert(
             traced,
@@ -810,13 +812,15 @@ class Qwen35Converter(BaseConverter):
                     IN_PREFILL=self.is_prefill,
                     apply_final_norm=True,
                 )
-                logits = self.model.lm_head(hidden_states.permute(0, 2, 1).unsqueeze(2))
-                logits = logits.squeeze(2).permute(0, 2, 1)
+                h = hidden_states.permute(0, 2, 1).unsqueeze(2)
+                logits_parts = [getattr(self.model, f"lm_head16_{i+1}")(h).squeeze(2).permute(0, 2, 1)
+                                for i in range(self.model.lm_head_split)]
                 if self.argmax_in_model and not self.is_prefill:
+                    logits = torch.cat(logits_parts, dim=-1)
                     argmax_idx = torch.argmax(logits, dim=-1).to(torch.int32)
                     argmax_val = torch.gather(logits, -1, argmax_idx.unsqueeze(-1)).squeeze(-1)
                     return argmax_idx, argmax_val
-                return logits
+                return tuple(logits_parts)
 
         wrapper = MonolithicWrapper(model, is_prefill, argmax_in_model).eval()
         if is_prefill:
@@ -960,7 +964,12 @@ def test_conversion(
     os.makedirs(output_dir, exist_ok=True)
     models = mlmodel if isinstance(mlmodel, list) else [mlmodel]
     vocab_size = int(getattr(model.config, "vocab_size", 0)) if model is not None else None
-    lm_head_chunk_sizes = [int(model.lm_head.out_channels)] if model is not None else None
+    lm_head_chunk_sizes = None
+    if model is not None:
+        lm_head_chunk_sizes = [
+            int(getattr(model, f"lm_head16_{i+1}").out_channels)
+            for i in range(model.lm_head_split)
+        ]
 
     for i, m in enumerate(models):
         AddMetadata(

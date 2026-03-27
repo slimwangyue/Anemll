@@ -1,0 +1,72 @@
+{
+  "model_dir": "/Users/yw68/Anemll_remote_run/qwen35_milestone1_3",
+  "ctx": 1024,
+  "steps": 12,
+  "static_dynamic_slice_check": [
+    {
+      "model_name": "ffn_LUT4_chunk0.mlpackage",
+      "total_slice_updates": 22,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "ffn_LUT4_chunk1.mlpackage",
+      "total_slice_updates": 22,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "ffn_LUT4_chunk2.mlpackage",
+      "total_slice_updates": 22,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "ffn_LUT4_chunk3.mlpackage",
+      "total_slice_updates": 22,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "prefill_LUT4_chunk0.mlpackage",
+      "total_slice_updates": 16,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "prefill_LUT4_chunk1.mlpackage",
+      "total_slice_updates": 16,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "prefill_LUT4_chunk2.mlpackage",
+      "total_slice_updates": 16,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    },
+    {
+      "model_name": "prefill_LUT4_chunk3.mlpackage",
+      "total_slice_updates": 16,
+      "dynamic_slice_updates": 4,
+      "has_dynamic_write": true
+    }
+  ],
+  "static_pass": true,
+  "runtime_decode_smoke": {
+    "steps": 12,
+    "elapsed_sec": 1.6047449111938477,
+    "tok_per_sec": 7.47782399326795,
+    "generated_preview": [
+      846,
+      198,
+      220,
+      2414,
+      310,
+      6163,
+      3299,
+      13
+    ]
+  },
+  "overall_pass": true
+}

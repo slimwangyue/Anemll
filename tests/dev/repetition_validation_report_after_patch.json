@@ -1,0 +1,106 @@
+{
+  "runs": [
+    {
+      "prompt": "Explain in 6 bullet points why sky appears blue.",
+      "settings": {
+        "enable_thinking": false,
+        "repetition_guard": true,
+        "repetition_penalty": 1.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0
+      },
+      "stop_reason": "length",
+      "decode_tokens": 180,
+      "rep4_repeated": 0,
+      "rep4_total": 127,
+      "rep4_ratio": 0.0,
+      "loop_signature": "none",
+      "text_preview": "Here are 6 key points explaining why the sky appears blue:\n\n1.  **Scattering of Shorter Wavelengths**: Sunlight is composed of a spectrum of colors, but when it passes through the Earth's atmosphere, it interacts with air molecules.\n2.  **Rayleigh Scattering Mechanism**: This phenomenon occurs because the wavelength of blue light is shorter than that of red light, causing it to scatter more easily through the atmosphere.\n3.  **Atmospheric Composition**: The atmosphere is composed primarily of nitrogen and oxygen molecules, which interact with light in specific ways.\n4.  **Directional Dependenc"
+    },
+    {
+      "prompt": "Explain in 6 bullet points why sky appears blue.",
+      "settings": {
+        "enable_thinking": false,
+        "repetition_guard": true,
+        "repetition_penalty": 1.08,
+        "presence_penalty": 0.05,
+        "frequency_penalty": 0.08
+      },
+      "stop_reason": "length",
+      "decode_tokens": 180,
+      "rep4_repeated": 0,
+      "rep4_total": 127,
+      "rep4_ratio": 0.0,
+      "loop_signature": "none",
+      "text_preview": "Here are 6 key points explaining why the sky appears blue:\n\n1.  **Scattering of Shorter Wavelengths**: Sunlight is composed of a spectrum of colors, but when it passes through the Earth's atmosphere, it interacts with air molecules.\n2.  **Rayleigh Scattering Mechanism**: This phenomenon occurs because the wavelength of blue light is shorter than that of red light, causing it to scatter more easily through the atmosphere.\n3.  **Atmospheric Composition**: The atmosphere is composed primarily of nitrogen and oxygen molecules, which interact with light in specific ways.\n4.  **Directional Dependenc"
+    },
+    {
+      "prompt": "Explain in 6 bullet points why sky appears blue.",
+      "settings": {
+        "enable_thinking": true,
+        "repetition_guard": true,
+        "repetition_penalty": 1.08,
+        "presence_penalty": 0.05,
+        "frequency_penalty": 0.08
+      },
+      "stop_reason": "length",
+      "decode_tokens": 180,
+      "rep4_repeated": 7,
+      "rep4_total": 151,
+      "rep4_ratio": 0.046357615894039736,
+      "loop_signature": "none",
+      "text_preview": "The user is asking for an explanation of why the sky appears blue, and they want it in 6 bullet points. I need to provide a clear, scientific explanation of this atmospheric phenomenon while maintaining the format they requested.\n</think>\n\nThe blue color of the sky is caused by **Rayleigh scattering**, a physical phenomenon where shorter wavelengths of light (which appear blue) are scattered more effectively by Earth's atmosphere than longer wavelengths (which appear yellow, orange, or red). This occurs because the atmosphere is composed of gas molecules that scatter light, and the shorter wav"
+    },
+    {
+      "prompt": "Write a short answer: what is the capital of China and why?",
+      "settings": {
+        "enable_thinking": false,
+        "repetition_guard": true,
+        "repetition_penalty": 1.0,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0
+      },
+      "stop_reason": "eos",
+      "decode_tokens": 124,
+      "rep4_repeated": 7,
+      "rep4_total": 90,
+      "rep4_ratio": 0.07777777777777778,
+      "loop_signature": "none",
+      "text_preview": "The capital of China is **Beijing**.\n\nLocated in the heart of the nation, Beijing serves as the country's political, cultural, and economic center. It is home to the central government, including the National People's Congress and the Supreme People's Court, making it the administrative hub of the country.\n\nAdditionally, Beijing is the largest city in China by population and area, with a population of over 20 million people. It is also the most populous city in China, with a population of over 20 million people.\n\nThe capital of China is Beijing.\n\n**Answer: Beijing**"
+    },
+    {
+      "prompt": "Write a short answer: what is the capital of China and why?",
+      "settings": {
+        "enable_thinking": false,
+        "repetition_guard": true,
+        "repetition_penalty": 1.08,
+        "presence_penalty": 0.05,
+        "frequency_penalty": 0.08
+      },
+      "stop_reason": "eos",
+      "decode_tokens": 124,
+      "rep4_repeated": 7,
+      "rep4_total": 90,
+      "rep4_ratio": 0.07777777777777778,
+      "loop_signature": "none",
+      "text_preview": "The capital of China is **Beijing**.\n\nLocated in the heart of the nation, Beijing serves as the country's political, cultural, and economic center. It is home to the central government, including the National People's Congress and the Supreme People's Court, making it the administrative hub of the country.\n\nAdditionally, Beijing is the largest city in China by population and area, with a population of over 20 million people. It is also the most populous city in China, with a population of over 20 million people.\n\nThe capital of China is Beijing.\n\n**Answer: Beijing**"
+    },
+    {
+      "prompt": "Write a short answer: what is the capital of China and why?",
+      "settings": {
+        "enable_thinking": true,
+        "repetition_guard": true,
+        "repetition_penalty": 1.08,
+        "presence_penalty": 0.05,
+        "frequency_penalty": 0.08
+      },
+      "stop_reason": "length",
+      "decode_tokens": 180,
+      "rep4_repeated": 25,
+      "rep4_total": 124,
+      "rep4_ratio": 0.20161290322580644,
+      "loop_signature": "none",
+      "text_preview": "Thinking Process\n\n</think>\n\nThe capital of China is **Beijing**.\n\nIt is the capital because it is the **capital city** of the People's Republic of China, serving as the nation's primary political, economic, and cultural hub.\n\n*(Note: If you are looking for a joke answer, the answer is \"The capital of China is Beijing, and the reason is that it is the capital of China. However, if you are asking about the capital of the United States, that is Washington, D.C.)*\"\n\n**Answer:**\nThe capital of China is **Beijing**.\n\n**Reason:**\nBeijing is the capital because it is the **capital city** of the People"
+    }
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "runs": [
+    {
+      "enable_thinking": false,
+      "comparison": {
+        "hf_len": 16,
+        "coreml_len": 16,
+        "common_len": 16,
+        "token_match_count": 0,
+        "token_match_ratio": 0.0,
+        "first_divergence_index": 0
+      },
+      "hf_first_40_ids": [
+        126114,
+        97024,
+        130826,
+        113244,
+        97916,
+        96009,
+        96802,
+        3709,
+        114625,
+        96469,
+        96998,
+        5205,
+        97656,
+        108603,
+        99808,
+        5205
+      ],
+      "coreml_first_40_ids": [
+        109266,
+        6115,
+        97698,
+        14791,
+        220,
+        110257,
+        3709,
+        95815,
+        332,
+        96849,
+        5205,
+        109179,
+        332,
+        96988,
+        104985,
+        96146
+      ],
+      "hf_text_preview": "红烧肉是一道经典的中华名菜，色泽红亮、肥而不腻、",
+      "coreml_text_preview": "你好！作为 AI 助手，我**不能、也不能**直接教你做"
+    },
+    {
+      "enable_thinking": true,
+      "comparison": {
+        "hf_len": 16,
+        "coreml_len": 16,
+        "common_len": 16,
+        "token_match_count": 10,
+        "token_match_ratio": 0.625,
+        "first_divergence_index": 10
+      },
+      "hf_first_40_ids": [
+        8160,
+        579,
+        264,
+        7047,
+        1817,
+        421,
+        11177,
+        310,
+        279,
+        11488,
+        3605,
+        24646,
+        3920,
+        81038,
+        318,
+        82749
+      ],
+      "coreml_first_40_ids": [
+        8160,
+        579,
+        264,
+        7047,
+        1817,
+        421,
+        11177,
+        310,
+        279,
+        11488,
+        1965,
+        25,
+        271,
+        16,
+        13,
+        220
+      ],
+      "hf_text_preview": "Here's a thinking process that leads to the suggested Red Braised Pork (Hong",
+      "coreml_text_preview": "Here's a thinking process that leads to the suggested response:\n\n1. "
+    }
+  ]
+}

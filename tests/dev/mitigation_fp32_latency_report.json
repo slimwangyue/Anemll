@@ -1,0 +1,59 @@
+{
+  "benchmark": {
+    "A_FP16_baseline": {
+      "label": "A_FP16_baseline",
+      "mean_ms": 8.66,
+      "trimmed_mean_ms": 8.66,
+      "p50_ms": 8.65,
+      "min_ms": 8.43,
+      "max_ms": 8.86,
+      "size_mb": 21.6,
+      "n_iters": 30
+    },
+    "D_FP32_precision": {
+      "label": "D_FP32_precision",
+      "mean_ms": 13.22,
+      "trimmed_mean_ms": 13.1,
+      "p50_ms": 13.07,
+      "min_ms": 12.62,
+      "max_ms": 16.63,
+      "size_mb": 21.5,
+      "n_iters": 30
+    },
+    "C_DirectRMSNorm_FP16": {
+      "label": "C_DirectRMSNorm_FP16",
+      "mean_ms": 8.39,
+      "trimmed_mean_ms": 8.39,
+      "p50_ms": 8.39,
+      "min_ms": 8.26,
+      "max_ms": 8.59,
+      "size_mb": 21.6,
+      "n_iters": 30
+    },
+    "F_DirectRMSNorm_FP32": {
+      "label": "F_DirectRMSNorm_FP32",
+      "mean_ms": 12.44,
+      "trimmed_mean_ms": 12.43,
+      "p50_ms": 12.38,
+      "min_ms": 12.03,
+      "max_ms": 12.94,
+      "size_mb": 21.5,
+      "n_iters": 30
+    }
+  },
+  "production_sizes_mb": {
+    "embeddings.mlmodelc": 304.1,
+    "embeddings.mlpackage": 304.1,
+    "ffn_LUT4_chunk0.mlpackage": 427.8,
+    "ffn_LUT4_chunk1.mlpackage": 427.8,
+    "ffn_LUT4_chunk2.mlpackage": 427.8,
+    "ffn_LUT4_chunk3.mlpackage": 427.8,
+    "lm_head.mlpackage": 462.3,
+    "lm_head_logits.mlmodelc": 462.3,
+    "lm_head_logits.mlpackage": 462.3,
+    "prefill_LUT4_chunk0.mlpackage": 437.0,
+    "prefill_LUT4_chunk1.mlpackage": 437.0,
+    "prefill_LUT4_chunk2.mlpackage": 437.0,
+    "prefill_LUT4_chunk3.mlpackage": 437.0
+  }
+}
