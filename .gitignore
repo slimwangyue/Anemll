@@ -59,3 +59,4 @@ qwen3_5_8chunk_models/*
 
 models/*
 qwen3_5_lut6_models/*
+qwen3_5_explore/*

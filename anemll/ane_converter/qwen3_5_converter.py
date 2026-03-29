@@ -79,6 +79,25 @@ class Qwen35Converter(BaseConverter):
         return lut_bits
 
     @staticmethod
+    def _chunk_postprocess_workers(total_chunks: int) -> int | None:
+        """Return the palettization worker count for chunk exports.
+
+        By default, historical behavior kept multi-chunk exports on a single
+        worker to minimize memory spikes. Exploratory export workflows can
+        override this with `QWEN35_CHUNK_POSTPROCESS_WORKERS` to trade memory
+        for substantially faster LUT postprocess time.
+        """
+        env_value = os.environ.get("QWEN35_CHUNK_POSTPROCESS_WORKERS")
+        if env_value is not None:
+            try:
+                parsed = int(env_value)
+                if parsed > 0:
+                    return parsed
+            except ValueError:
+                pass
+        return None if total_chunks > 1 else 8
+
+    @staticmethod
     def GetTransformerStates(
         model: Qwen35ForCausalLM,
         part=None,
@@ -547,7 +566,7 @@ class Qwen35Converter(BaseConverter):
         )
         if self.lut_bits:
             self.converted_model = mlmodel
-            num_workers = None if total_chunks > 1 else 8
+            num_workers = self._chunk_postprocess_workers(total_chunks)
             self.postprocess(num_workers=num_workers)
             mlmodel = self.converted_model
         return mlmodel
@@ -730,7 +749,193 @@ class Qwen35Converter(BaseConverter):
         )
         if self.lut_bits:
             self.converted_model = mlmodel
-            num_workers = None if total_chunks > 1 else 8
+            num_workers = self._chunk_postprocess_workers(total_chunks)
+            self.postprocess(num_workers=num_workers)
+            mlmodel = self.converted_model
+        return mlmodel
+
+    def convert_part_2_prefill_exact(
+        self,
+        model: Qwen35ForCausalLM,
+        chunk_idx: int = 0,
+        total_chunks: int = 1,
+        block_start: int = 0,
+        exact_seq_len: int | None = None,
+    ) -> ct.models.MLModel:
+        """Convert a static-shape prefill chunk with no valid_len input.
+
+        This exporter is intended for exact bucket experiments where the
+        prefill sequence length is fixed at trace time and every token position
+        in the bucket is considered valid.
+        """
+        require_coreml()
+        total_layers = model.config.num_hidden_layers
+        if total_chunks > 1:
+            base, rem = divmod(total_layers, total_chunks)
+            start_layer = chunk_idx * base + min(chunk_idx, rem)
+            end_layer = start_layer + base + (1 if chunk_idx < rem else 0)
+        else:
+            start_layer = 0
+            end_layer = None
+        local_num_layers = (end_layer - start_layer) if end_layer is not None else total_layers
+        export_seq_len = int(exact_seq_len if exact_seq_len is not None else self.batch_size)
+
+        class ExactPrefillWrapper(torch.nn.Module):
+            def __init__(
+                self,
+                model: Qwen35ForCausalLM,
+                start_layer: int,
+                end_layer: int | None,
+                export_seq_len: int,
+            ) -> None:
+                super().__init__()
+                self.model = model
+                self.start_layer = start_layer
+                self.end_layer = end_layer
+                self.export_seq_len = export_seq_len
+                self.local_num_layers = (
+                    (end_layer - start_layer)
+                    if end_layer is not None
+                    else len(model.model.layers)
+                )
+                cfg = model.config
+                self.register_buffer(
+                    "k_cache",
+                    torch.zeros(
+                        (
+                            self.local_num_layers,
+                            cfg.num_key_value_heads,
+                            cfg.state_length,
+                            cfg.head_dim,
+                        ),
+                        dtype=MODEL_DTYPE,
+                        device=TEST_DEVICE,
+                    ),
+                )
+                self.register_buffer(
+                    "v_cache",
+                    torch.zeros(
+                        (
+                            self.local_num_layers,
+                            cfg.num_key_value_heads,
+                            cfg.state_length,
+                            cfg.head_dim,
+                        ),
+                        dtype=MODEL_DTYPE,
+                        device=TEST_DEVICE,
+                    ),
+                )
+                if cfg.has_linear_attention():
+                    conv_dim = (
+                        cfg.text_config.linear_num_key_heads * cfg.text_config.linear_key_head_dim * 2
+                        + cfg.text_config.linear_num_value_heads * cfg.text_config.linear_value_head_dim
+                    )
+                    conv_kernel = max(1, int(cfg.text_config.linear_conv_kernel_dim))
+                    ane_dim1, ane_dim2 = ane_conv_state_shape(conv_dim, conv_kernel)
+                    self._lin_conv_shape = (self.local_num_layers, ane_dim1, ane_dim2)
+                    self._lin_rec_shape = (
+                        self.local_num_layers,
+                        cfg.text_config.linear_num_value_heads,
+                        cfg.text_config.linear_key_head_dim,
+                        cfg.text_config.linear_value_head_dim,
+                    )
+                    self._has_linear = True
+                else:
+                    self._has_linear = False
+                for layer_idx in range(
+                    self.start_layer,
+                    self.end_layer if self.end_layer is not None else len(self.model.model.layers),
+                ):
+                    layer = self.model.model.layers[layer_idx]
+                    if getattr(layer, "layer_type", None) == "linear_attention":
+                        layer.self_attn.export_expected_batch_size = 1
+                        layer.self_attn.export_expected_seq_len = export_seq_len
+                self.states = Qwen35Converter.GetChunkLocalTransformerStates(
+                    model,
+                    self.local_num_layers,
+                    prefix="",
+                    split_full_attention_kv=True,
+                )
+
+            def forward(
+                self,
+                hidden_states,
+                position_ids,
+                causal_mask,
+                current_pos,
+                linear_conv_state,
+                linear_recurrent_state,
+            ):
+                out = self.model.model.process_layers_prefill_export_local_state(
+                    hidden_states=hidden_states,
+                    position_ids=position_ids,
+                    causal_mask=causal_mask,
+                    current_pos=current_pos,
+                    kv_cache_0=None,
+                    k_cache=self.k_cache,
+                    v_cache=self.v_cache,
+                    linear_conv_state=linear_conv_state,
+                    linear_recurrent_state=linear_recurrent_state,
+                    start_layer=self.start_layer,
+                    end_layer=self.end_layer,
+                    apply_final_norm=False,
+                    expected_batch_size=1,
+                    expected_seq_len=self.export_seq_len,
+                    valid_len=None,
+                )
+                return out[:, -1:, :], linear_conv_state, linear_recurrent_state
+
+        wrapper = ExactPrefillWrapper(model, start_layer, end_layer, export_seq_len).eval()
+        cfg = model.config
+        hidden_states = torch.zeros(
+            (1, export_seq_len, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
+        )
+        position_ids = torch.arange(export_seq_len, dtype=torch.int32, device=TEST_DEVICE)
+        causal_mask = torch.zeros(
+            (1, 1, export_seq_len, self.context_length), dtype=torch.float16, device=TEST_DEVICE
+        )
+        current_pos = torch.full((1,), int(block_start), dtype=torch.int32, device=TEST_DEVICE)
+
+        if wrapper._has_linear:
+            lin_conv = torch.zeros(wrapper._lin_conv_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros(wrapper._lin_rec_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
+        else:
+            lin_conv = torch.zeros((local_num_layers, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+            lin_rec = torch.zeros((local_num_layers, 1, 1, 1), dtype=MODEL_DTYPE, device=TEST_DEVICE)
+
+        self._reset_state_buffers(wrapper)
+        traced = torch.jit.trace(
+            wrapper,
+            (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec),
+            check_trace=False,
+        )
+        self._reset_state_buffers(wrapper)
+        self._reset_state_buffers(traced)
+
+        mlmodel = ct.convert(
+            traced,
+            inputs=[
+                ct.TensorType(name="hidden_states", shape=hidden_states.shape, dtype=np.float16),
+                ct.TensorType(name="position_ids", shape=position_ids.shape, dtype=np.int32),
+                ct.TensorType(name="causal_mask", shape=causal_mask.shape, dtype=np.float16),
+                ct.TensorType(name="current_pos", shape=current_pos.shape, dtype=np.int32),
+                ct.TensorType(name="linear_conv_state", shape=lin_conv.shape, dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state", shape=lin_rec.shape, dtype=np.float16),
+            ],
+            outputs=[
+                ct.TensorType(name="output_hidden_states", dtype=np.float16),
+                ct.TensorType(name="linear_conv_state_out", dtype=np.float16),
+                ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
+            ],
+            states=wrapper.states,
+            compute_precision=ct.precision.FLOAT16,
+            compute_units=ct.ComputeUnit.CPU_AND_NE,
+            minimum_deployment_target=ct.target.iOS18,
+            convert_to="mlprogram",
+        )
+        if self.lut_bits:
+            self.converted_model = mlmodel
+            num_workers = self._chunk_postprocess_workers(total_chunks)
             self.postprocess(num_workers=num_workers)
             mlmodel = self.converted_model
         return mlmodel
