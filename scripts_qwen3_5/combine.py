@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 2.0 — Step 2: Combine chunks with ANEMLL-Dedup.
+"""Qwen3.5-4B Milestone 2.1 — Step 2: Combine chunks with ANEMLL-Dedup.
 
 Combines each decode + prefill into a single multi-function .mlpackage
 with shared (deduplicated) weights.
@@ -16,7 +16,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 
-from config import BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, DEFAULT_OUTPUT
+from config import BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, FFN_LABEL, DEFAULT_OUTPUT
 from anemll.utils.combine_models import _save_multifunction_dedup
 
 
@@ -31,33 +31,33 @@ def dir_size_mb(path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Combine Qwen3.5-4B chunks (Milestone 2.0)")
+    parser = argparse.ArgumentParser(description="Combine Qwen3.5-4B chunks (Milestone 2.1)")
     parser.add_argument("--input", default=DEFAULT_OUTPUT,
                         help="Directory with exported .mlpackage files")
     parser.add_argument("--skip-existing", action="store_true")
     args = parser.parse_args()
 
-    label = f"LUT{LUT_BITS}"
+    label = FFN_LABEL
     combined_dir = os.path.join(args.input, f"combined_{label}_dedup")
     os.makedirs(combined_dir, exist_ok=True)
 
     # Verify sources
-    missing = []
-    for ci in range(NUM_CHUNKS):
-        dec = os.path.join(args.input, f"ffn_{label}_chunk{ci}.mlpackage")
-        if not os.path.exists(dec):
-            missing.append(dec)
-        pf = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
-        if not os.path.exists(pf):
-            missing.append(pf)
-    if missing:
-        print("ERROR: Missing source files:")
-        for m in missing:
-            print(f"  {m}")
-        return 1
+    # missing = []
+    # for ci in range(NUM_CHUNKS):
+    #     dec = os.path.join(args.input, f"ffn_{label}_chunk{ci}.mlpackage")
+    #     if not os.path.exists(dec):
+    #         missing.append(dec)
+    #     pf = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
+    #     if not os.path.exists(pf):
+    #         missing.append(pf)
+    # if missing:
+    #     print("ERROR: Missing source files:")
+    #     for m in missing:
+    #         print(f"  {m}")
+    #     return 1
 
     print("=" * 70)
-    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 2.0")
+    print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 2.1")
     print(f"  Functions per chunk: infer + prefill")
     print("=" * 70)
 

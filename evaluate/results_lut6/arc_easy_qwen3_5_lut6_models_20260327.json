@@ -1,0 +1,16 @@
+{
+    "arc_easy": {
+        "alias": "arc_easy",
+        "acc,none": 0.73,
+        "acc_stderr,none": 0.044619604333847415,
+        "acc_norm,none": 0.7,
+        "acc_norm_stderr,none": 0.046056618647183814,
+        "samples_processed": 100,
+        "samples_indataset": 0,
+        "date": "20260327",
+        "time": "03:04:AM",
+        "duration": "00h:26m:05s",
+        "IterPerSec": 0.06,
+        "cmdline": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'winogrande boolq arc_challenge arc_easy hellaswag' '--output-dir' 'evaluate/results_lut6' '--limit' '100' '--seed' '123' "
+    }
+}

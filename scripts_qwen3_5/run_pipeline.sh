@@ -76,6 +76,6 @@ echo "To run profiling:"
 echo "  python scripts_qwen3_5/profile.py --export-dir $OUTPUT --skip-cpu-compare"
 echo ""
 echo "Output directory:"
-du -sh "$OUTPUT"/*.mlpackage "$OUTPUT"/combined_LUT4_dedup/*.mlpackage 2>/dev/null | head -20 || true
+du -sh "$OUTPUT"/*.mlpackage "$OUTPUT"/combined_LUT*_dedup/*.mlpackage 2>/dev/null | head -20 || true
 echo ""
 echo "Pipeline complete!"

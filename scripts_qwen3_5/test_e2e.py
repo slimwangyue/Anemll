@@ -15,7 +15,7 @@ sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 import numpy as np
 import coremltools as ct
 from transformers import AutoTokenizer
-from config import DEFAULT_OUTPUT, DEFAULT_HF_MODEL, CTX, NUM_CHUNKS
+from config import DEFAULT_OUTPUT, DEFAULT_HF_MODEL, CTX, NUM_CHUNKS, FFN_LABEL
 
 MAX_TOKENS = 30
 
@@ -48,7 +48,7 @@ class LightEngine:
         self.ffns = []
         for ci in range(NUM_CHUNKS):
             print(f"  Loading ffn chunk {ci}...")
-            m = ct.models.MLModel(find_model(export_dir, f"ffn_LUT4_chunk{ci}"), compute_units=self.cu)
+            m = ct.models.MLModel(find_model(export_dir, f"ffn_{FFN_LABEL}_chunk{ci}"), compute_units=self.cu)
             self.ffns.append(m)
             gc.collect()
 

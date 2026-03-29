@@ -53,3 +53,9 @@ qwen3_5_stable_models/
 *.mlpackage
 *.mlmodelc
 tests/dev/MLXSpeedTest/
+
+qwen3_5_6chunk_models/*
+qwen3_5_8chunk_models/*
+
+models/*
+qwen3_5_lut6_models/*

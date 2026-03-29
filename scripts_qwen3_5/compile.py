@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 2.0 — Step 3: Compile .mlpackage to .mlmodelc.
+"""Qwen3.5-4B Milestone 2.1 — Step 3: Compile .mlpackage to .mlmodelc.
 
 Usage:
     python scripts_qwen3_5/compile.py --model-dir /path/to/models
@@ -13,7 +13,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 
-from config import DEFAULT_OUTPUT
+from config import DEFAULT_OUTPUT, FFN_LABEL
 
 
 def compile_model(mlpackage_path, output_dir):
@@ -55,7 +55,7 @@ def main():
     output_dir = args.output or model_dir
 
     print("=" * 70)
-    print("  Qwen3.5-4B Model Compilation — Milestone 2.0")
+    print("  Qwen3.5-4B Model Compilation — Milestone 2.1")
     print(f"  Input:  {model_dir}")
     print(f"  Output: {output_dir}")
     print("=" * 70)
@@ -71,9 +71,9 @@ def main():
             fail += 1
 
     # Combined dedup models
-    combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+    combined_dir = os.path.join(model_dir, f"combined_{FFN_LABEL}_dedup")
     if os.path.isdir(combined_dir):
-        combined_out = os.path.join(output_dir, "combined_LUT4_dedup")
+        combined_out = os.path.join(output_dir, f"combined_{FFN_LABEL}_dedup")
         os.makedirs(combined_out, exist_ok=True)
         print("\n── Combined Dedup Models ──")
         for p in sorted(glob.glob(os.path.join(combined_dir, "chunk*.mlpackage"))):

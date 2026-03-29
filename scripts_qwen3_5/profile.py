@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive ANE profiling for Qwen3.5-4B — Milestone 2.0 (batch prefill + valid_len).
+"""Comprehensive ANE profiling for Qwen3.5-4B — Milestone 2.1 (LUT6 gs=4 FFN).
 
 Profiles ALL model components (embed, lm_head, 4 decode FFN, 4 prefill FFN)
 with focus on ANE performance, dynamic KV cache behavior, and throughput.
@@ -31,7 +31,7 @@ import gc, time, argparse
 import numpy as np
 import coremltools as ct
 from transformers import AutoTokenizer
-from config import DEFAULT_OUTPUT, DEFAULT_HF_MODEL, CTX, NUM_CHUNKS, BATCH_SIZE
+from config import DEFAULT_OUTPUT, DEFAULT_HF_MODEL, CTX, NUM_CHUNKS, BATCH_SIZE, FFN_LABEL, LUT_BITS
 
 MODEL_PATH = DEFAULT_HF_MODEL
 EXPORT_DIR = DEFAULT_OUTPUT
@@ -205,7 +205,7 @@ class ProfileEngine:
         self.ane_failures = []
 
         # Detect combined dedup directory (same as chat_server.py)
-        self.combined_dir = os.path.join(out_dir, "combined_LUT4_dedup")
+        self.combined_dir = os.path.join(out_dir, f"combined_{FFN_LABEL}_dedup")
         self.use_combined = os.path.isdir(self.combined_dir)
 
         # --- Embeddings ---
@@ -253,7 +253,7 @@ class ProfileEngine:
                 m_infer = _load_model(path, compute_unit, function_name="infer")
                 print(f" {time.time()-t0:.0f}s")
             else:
-                path = _find_model(out_dir, f"ffn_LUT4_chunk{ci}")
+                path = _find_model(out_dir, f"ffn_{FFN_LABEL}_chunk{ci}")
                 print(f"  chunk {ci} infer  (separate)...", end="", flush=True)
                 t0 = time.time()
                 m_infer = _load_model(path, compute_unit)
@@ -270,7 +270,7 @@ class ProfileEngine:
                 print(f" {time.time()-t0:.0f}s")
             else:
                 try:
-                    pf_path = _find_model(out_dir, f"prefill_LUT4_chunk{ci}")
+                    pf_path = _find_model(out_dir, f"prefill_{FFN_LABEL}_chunk{ci}")
                     print(f"  chunk {ci} prefill (separate)...", end="", flush=True)
                     t0 = time.time()
                     m_prefill = _load_model(pf_path, compute_unit)
@@ -445,15 +445,15 @@ def main():
 
     max_gen = args.tokens
     out_dir = args.export_dir
-    ffn_label = "LUT4"
+    ffn_label = FFN_LABEL
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH, use_fast=False)
     stop_ids = _build_stop_ids(tokenizer)
 
     print("=" * 85)
-    print("  ANE PROFILING — Qwen3.5-4B Milestone 2.0 (Batch Prefill)")
+    print("  ANE PROFILING — Qwen3.5-4B Milestone 2.1 (LUT6 gs=4 FFN)")
     print(f"  Dynamic KV cache: current_pos[0] → aten::select → ANE-safe")
-    print(f"  Config: LUT4 embed + LUT4 FFN × {NUM_CHUNKS} chunks + fp16 LM Head")
+    print(f"  Config: LUT{LUT_BITS} embed + {FFN_LABEL} FFN × {NUM_CHUNKS} chunks + fp16 LM Head")
     print(f"  CTX={CTX}, BATCH={BATCH_SIZE}, Tokens/turn={max_gen}")
     print(f"  Models: {out_dir}")
     print("=" * 85)
@@ -464,13 +464,13 @@ def main():
     print_section("MIL Operation Analysis", 1)
 
     # Discover model files the same way as chat_server.py
-    combined_dir = os.path.join(out_dir, "combined_LUT4_dedup")
+    combined_dir = os.path.join(out_dir, f"combined_{FFN_LABEL}_dedup")
     use_combined = os.path.isdir(combined_dir)
 
     model_specs = []
     # Embeddings
     try:
-        model_specs.append((_find_model(out_dir, "embeddings"), "Embeddings (LUT4)"))
+        model_specs.append((_find_model(out_dir, "embeddings"), f"Embeddings (LUT{LUT_BITS})"))
     except FileNotFoundError:
         pass
     # LM Head (prefer logits, same as chat_server.py)
@@ -781,7 +781,7 @@ def main():
     # Model info
     print(f"\n  Architecture: Qwen3.5-4B (24 linear-attn + 8 full-attn layers)")
     print(f"  KV Indexing: tensor-value slice — current_pos[0] (Milestone 2.0)")
-    print(f"  Quantization: LUT4 embed + LUT4 FFN + fp16 LM Head")
+    print(f"  Quantization: LUT{LUT_BITS} embed + {FFN_LABEL} FFN + fp16 LM Head")
     print(f"  Context: {CTX} tokens, Batch: {BATCH_SIZE}, Chunks: {NUM_CHUNKS}")
     print(f"  Total model size: {total_sz:.0f} MB")
 

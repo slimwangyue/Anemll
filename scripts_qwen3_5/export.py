@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B Milestone 2.0 — Step 1: Export all CoreML model components.
+"""Qwen3.5-4B Milestone 2.1 — Step 1: Export all CoreML model components.
 
 Exports:
-  - embeddings (LUT4)             → embeddings.mlpackage
-  - lm_head (LUT6)                → lm_head.mlpackage
-  - 4 FFN decode chunks (LUT4)    → ffn_LUT4_chunk{0..3}.mlpackage
-  - 4 FFN prefill chunks (LUT4)   → prefill_LUT4_chunk{0..3}.mlpackage
+  - embeddings (LUT6 gs=8)          → embeddings.mlpackage
+  - lm_head (LUT6 gs=8)             → lm_head.mlpackage
+  - 4 FFN decode chunks (LUT6 gs=4) → ffn_LUT6_chunk{0..3}.mlpackage
+  - 4 FFN prefill chunks (LUT6 gs=4)→ prefill_LUT6_chunk{0..3}.mlpackage
 
 Dynamic KV cache slicing via RangeDim — one prefill model per chunk.
 
@@ -23,7 +23,7 @@ sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 
 from config import (
     BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, LM_HEAD_LUT,
-    PER_CHANNEL, DEFAULT_HF_MODEL, DEFAULT_OUTPUT,
+    PER_CHANNEL, FFN_PER_CHANNEL, FFN_LABEL, DEFAULT_HF_MODEL, DEFAULT_OUTPUT,
 )
 from anemll.models.qwen3_5_model import Qwen35ForCausalLM, Qwen35Config
 from anemll.ane_converter.qwen3_5_converter import Qwen35Converter
@@ -34,7 +34,7 @@ def export_embeddings(model, out_dir, skip_existing):
     if skip_existing and os.path.exists(path):
         print(f"  [skip] embeddings")
         return
-    print("  Exporting embeddings (LUT4)...")
+    print(f"  Exporting embeddings (LUT{LUT_BITS} gs={PER_CHANNEL})...")
     t0 = time.time()
     conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
                            num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=PER_CHANNEL)
@@ -60,17 +60,17 @@ def export_lm_head(model, out_dir, skip_existing):
 
 
 def export_ffn_chunks(model, out_dir, skip_existing):
-    label = f"LUT{LUT_BITS}"
+    label = FFN_LABEL
     for ci in range(NUM_CHUNKS):
         # Decode chunk
         dec_path = os.path.join(out_dir, f"ffn_{label}_chunk{ci}.mlpackage")
         if skip_existing and os.path.exists(dec_path):
             print(f"  [skip] decode chunk {ci}")
         else:
-            print(f"  Exporting decode chunk {ci} ({label})...")
+            print(f"  Exporting decode chunk {ci} ({label} gs={FFN_PER_CHANNEL})...")
             t0 = time.time()
             conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
-                                   num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=PER_CHANNEL)
+                                   num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=FFN_PER_CHANNEL)
             ml = conv.convert_part_2(model, chunk_idx=ci, total_chunks=NUM_CHUNKS)
             ml.save(dec_path)
             del ml, conv; gc.collect()
@@ -81,10 +81,10 @@ def export_ffn_chunks(model, out_dir, skip_existing):
         if skip_existing and os.path.exists(pf_path):
             print(f"  [skip] prefill chunk {ci}")
         else:
-            print(f"  Exporting prefill chunk {ci} ({label})...")
+            print(f"  Exporting prefill chunk {ci} ({label} gs={FFN_PER_CHANNEL})...")
             t0 = time.time()
             conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
-                                   num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=PER_CHANNEL)
+                                   num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=FFN_PER_CHANNEL)
             ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS)
             ml.save(pf_path)
             del ml, conv; gc.collect()
@@ -92,7 +92,7 @@ def export_ffn_chunks(model, out_dir, skip_existing):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export Qwen3.5-4B for ANE (Milestone 2.0)")
+    parser = argparse.ArgumentParser(description="Export Qwen3.5-4B for ANE (Milestone 2.1)")
     parser.add_argument("--model", default=DEFAULT_HF_MODEL,
                         help="Path to HuggingFace Qwen3.5-4B model directory")
     parser.add_argument("--output", default=DEFAULT_OUTPUT,
@@ -103,8 +103,8 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     print("=" * 70)
-    print("  Qwen3.5-4B ANE Export — Milestone 2.0 (Batch Prefill + valid_len)")
-    print(f"  Embed: LUT4 | LM Head: LUT{LM_HEAD_LUT} | FFN: LUT4 × {NUM_CHUNKS} chunks")
+    print("  Qwen3.5-4B ANE Export — Milestone 2.1 (LUT6 gs=4 FFN)")
+    print(f"  Embed: LUT{LUT_BITS} gs={PER_CHANNEL} | LM Head: LUT{LM_HEAD_LUT} gs={PER_CHANNEL} | FFN: {FFN_LABEL} gs={FFN_PER_CHANNEL} × {NUM_CHUNKS} chunks")
     print(f"  Batch: {BATCH_SIZE} | CTX: {CTX}")
     print(f"  Model: {args.model}")
     print(f"  Output: {args.output}")
@@ -123,12 +123,13 @@ def main():
     print(f"  Loaded in {time.time()-t_load:.1f}s")
 
     t_total = time.time()
-    print("\n[1/3] Embeddings")
-    export_embeddings(model, args.output, args.skip_existing)
-    print("\n[2/3] LM Head")
-    export_lm_head(model, args.output, args.skip_existing)
-    print("\n[3/3] FFN Chunks (decode + prefill)")
+    print("\n[1/3] FFN Chunks (decode + prefill)")
     export_ffn_chunks(model, args.output, args.skip_existing)
+    # print("\n[2/3] Embeddings")
+    # export_embeddings(model, args.output, args.skip_existing)
+    # print("\n[3/3] LM Head")
+    # export_lm_head(model, args.output, args.skip_existing)
+    
     del model; gc.collect()
 
     total_mb = 0

@@ -81,14 +81,15 @@ def main():
     if lm_path:
         disk["lm_head"] = round(dir_size_mb(lm_path), 1)
 
-    combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+    ffn_label = f"LUT{cfg.get('LUT_BITS', 6)}"
+    combined_dir = os.path.join(model_dir, f"combined_{ffn_label}_dedup")
     use_combined = os.path.isdir(combined_dir)
-    has_separate = os.path.exists(os.path.join(model_dir, "ffn_LUT4_chunk0.mlpackage"))
+    has_separate = os.path.exists(os.path.join(model_dir, f"ffn_{ffn_label}_chunk0.mlpackage"))
     for ci in range(num_chunks):
         if use_combined:
             p = _find(combined_dir, f"chunk{ci}")
         elif has_separate:
-            p = _find(model_dir, f"ffn_LUT4_chunk{ci}")
+            p = _find(model_dir, f"ffn_{ffn_label}_chunk{ci}")
         else:
             p = None
         if p:

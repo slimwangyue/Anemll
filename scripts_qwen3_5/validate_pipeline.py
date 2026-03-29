@@ -23,7 +23,7 @@ sys.path.insert(0, _SCRIPT_DIR)
 
 import coremltools as ct
 from transformers import AutoTokenizer
-from config import BATCH_SIZE, CTX, NUM_CHUNKS, DEFAULT_OUTPUT, DEFAULT_HF_MODEL
+from config import BATCH_SIZE, CTX, NUM_CHUNKS, FFN_LABEL, DEFAULT_OUTPUT, DEFAULT_HF_MODEL
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -68,7 +68,7 @@ class TestEngine:
         print("[engine] Loading lm_head...")
         self.lmhead = _load_model(_find_model(model_dir, "lm_head"), cu)
 
-        combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+        combined_dir = os.path.join(model_dir, f"combined_{FFN_LABEL}_dedup")
         use_combined = os.path.isdir(combined_dir)
 
         print("[engine] Loading FFN chunks...")
@@ -91,13 +91,13 @@ class TestEngine:
                 m_prefill = _load_model(path, cu, function_name="prefill")
                 print(f" {time.time()-t0:.0f}s")
             else:
-                ffn_path = _find_model(model_dir, f"ffn_LUT4_chunk{ci}")
+                ffn_path = _find_model(model_dir, f"ffn_{FFN_LABEL}_chunk{ci}")
                 print(f"  chunk {ci} infer...", end="", flush=True)
                 t0 = time.time()
                 m_infer = _load_model(ffn_path, cu)
                 print(f" {time.time()-t0:.0f}s")
                 try:
-                    pf_path = _find_model(model_dir, f"prefill_LUT4_chunk{ci}")
+                    pf_path = _find_model(model_dir, f"prefill_{FFN_LABEL}_chunk{ci}")
                     print(f"  chunk {ci} prefill...", end="", flush=True)
                     t0 = time.time()
                     m_prefill = _load_model(pf_path, cu)

@@ -84,7 +84,7 @@ echo "======================================================================"
 echo "  Export + Combine complete ($CHUNKS chunks)"
 echo "  Output: $OUTPUT"
 echo "======================================================================"
-du -sh "$OUTPUT"/*.mlpackage "$OUTPUT"/combined_LUT4_dedup/*.mlpackage 2>/dev/null | head -20 || true
+du -sh "$OUTPUT"/*.mlpackage "$OUTPUT"/combined_LUT*_dedup/*.mlpackage 2>/dev/null | head -20 || true
 echo ""
 echo "Transfer to Mac, then compile + validate:"
 echo "  python scripts_qwen3_5/compile.py --model-dir $OUTPUT"

@@ -1,0 +1,28 @@
+{
+  "metadata": {
+    "overall_cmd_line": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'winogrande' '--output-dir' 'evaluate/results_lut6' '--limit' '20' '--seed' '123' ",
+    "model_path": "qwen3_5_lut6_models",
+    "date": "20260327",
+    "time_start_run_eval": "01:36:47AM",
+    "limit_per_task": "20",
+    "num_shots": "0",
+    "batch_size": "1",
+    "seed": "123",
+    "time_end_run_eval": "01:40:49AM",
+    "total_duration_run_eval": "00h:04m:02s"
+  },
+  "results": {
+    "winogrande": {
+      "alias": "winogrande",
+      "acc,none": 0.7,
+      "acc_stderr,none": 0.10513149660756935,
+      "samples_processed": 20,
+      "samples_indataset": 0,
+      "date": "20260327",
+      "time": "01:36:AM",
+      "duration": "00h:03m:54s",
+      "IterPerSec": 0.09,
+      "cmdline": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'winogrande' '--output-dir' 'evaluate/results_lut6' '--limit' '20' '--seed' '123' "
+    }
+  }
+}

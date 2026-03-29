@@ -1,0 +1,30 @@
+{
+  "metadata": {
+    "overall_cmd_line": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'hellaswag' '--output-dir' 'evaluate/results_lut6' '--limit' '100' '--seed' '123' ",
+    "model_path": "qwen3_5_lut6_models",
+    "date": "20260327",
+    "time_start_run_eval": "03:46:56AM",
+    "limit_per_task": "100",
+    "num_shots": "0",
+    "batch_size": "1",
+    "seed": "123",
+    "time_end_run_eval": "04:24:25AM",
+    "total_duration_run_eval": "00h:37m:29s"
+  },
+  "results": {
+    "hellaswag": {
+      "alias": "hellaswag",
+      "acc,none": 0.45,
+      "acc_stderr,none": 0.049999999999999996,
+      "acc_norm,none": 0.6,
+      "acc_norm_stderr,none": 0.049236596391733084,
+      "samples_processed": 100,
+      "samples_indataset": 0,
+      "date": "20260327",
+      "time": "03:46:AM",
+      "duration": "00h:36m:47s",
+      "IterPerSec": 0.05,
+      "cmdline": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'hellaswag' '--output-dir' 'evaluate/results_lut6' '--limit' '100' '--seed' '123' "
+    }
+  }
+}

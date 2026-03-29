@@ -30,9 +30,10 @@ STABLE = {
     "BATCH_SIZE": 256,
     "CTX": 1024,
     "NUM_CHUNKS": 4,
-    "LUT_BITS": 4,
+    "LUT_BITS": 6,
     "LM_HEAD_LUT": 6,
     "PER_CHANNEL": 8,
+    "FFN_PER_CHANNEL": 4,
     "output_dir": os.path.join(_REPO_ROOT, "qwen3_5_stable_models"),
 }
 

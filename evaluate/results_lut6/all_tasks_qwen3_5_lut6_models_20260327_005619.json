@@ -1,0 +1,13 @@
+{
+  "metadata": {
+    "overall_cmd_line": "'evaluate/ane/run_eval.sh' '--model' 'qwen3_5_lut6_models' '--tasks' 'winogrande boolq arc_challenge arc_easy hellaswag' '--output-dir' 'evaluate/results_lut6' '--limit' '100' '--seed' '123' ",
+    "model_path": "qwen3_5_lut6_models",
+    "date": "20260327",
+    "time_start_run_eval": "12:56:19AM",
+    "limit_per_task": "100",
+    "num_shots": "0",
+    "batch_size": "1",
+    "seed": "123"
+  },
+  "results": {}
+}

@@ -105,10 +105,11 @@ def _detect_shapes(ffn_model, use_combined):
 class Engine:
     """CoreML inference engine for a Qwen3.5 config."""
 
-    def __init__(self, model_dir, ctx, num_chunks, compute_unit, skip_prefill=False):
+    def __init__(self, model_dir, ctx, num_chunks, compute_unit, skip_prefill=False, lut_bits=6):
         cu = compute_unit
         self.ctx = ctx
         self.num_chunks = num_chunks
+        ffn_label = f"LUT{lut_bits}"
 
         # Loading order: embed → lm_head → FFN (infer only when skip_prefill)
         print(f"    Loading embeddings...", flush=True)
@@ -125,7 +126,7 @@ class Engine:
             self.lmhead = _load_model(_find_model(model_dir, "lm_head"), cu)
         print(f"      {time.time()-t0:.0f}s", flush=True)
 
-        combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+        combined_dir = os.path.join(model_dir, f"combined_{ffn_label}_dedup")
         use_combined = os.path.isdir(combined_dir)
 
         # Check if combined dir has .mlpackage (needed for function_name)
@@ -151,7 +152,7 @@ class Engine:
                     m_prefill = _load_model(path, cu, function_name="prefill")
                     print(f"      chunk {ci} prefill {time.time()-t0:.0f}s", flush=True)
             else:
-                path = _find_model(model_dir, f"ffn_LUT4_chunk{ci}")
+                path = _find_model(model_dir, f"ffn_{ffn_label}_chunk{ci}")
                 t0 = time.time()
                 m_infer = _load_model(path, cu)
                 print(f"      chunk {ci} (separate) {time.time()-t0:.0f}s", flush=True)
@@ -400,13 +401,14 @@ def validate_config(cfg_name, tokenizer, stop_ids, max_gen, compute_unit):
                      for n in ("lm_head", "lm_head_logits")
                      for ext in (".mlmodelc", ".mlpackage"))
     # Check for FFN chunks (combined or separate)
-    combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+    ffn_label = f"LUT{cfg['LUT_BITS']}"
+    combined_dir = os.path.join(model_dir, f"combined_{ffn_label}_dedup")
     has_ffn = os.path.isdir(combined_dir) and all(
         os.path.exists(os.path.join(combined_dir, f"chunk{ci}.mlpackage"))
         for ci in range(cfg["NUM_CHUNKS"])
     )
     if not has_ffn:
-        has_ffn = all(os.path.exists(os.path.join(model_dir, f"ffn_LUT4_chunk{ci}.mlpackage"))
+        has_ffn = all(os.path.exists(os.path.join(model_dir, f"ffn_{ffn_label}_chunk{ci}.mlpackage"))
                       for ci in range(cfg["NUM_CHUNKS"]))
     missing = []
     if not has_embed: missing.append("embeddings")

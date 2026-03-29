@@ -36,6 +36,7 @@ import coremltools as ct
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from transformers import AutoTokenizer
+from config import FFN_LABEL
 
 # ── HTML / JS / CSS ──────────────────────────────────────────────────
 
@@ -442,7 +443,7 @@ class ChatEngine:
         self.tpl_tokens = {}
 
         # Detect combined dedup directory
-        self.combined_dir = os.path.join(model_dir, "combined_LUT4_dedup")
+        self.combined_dir = os.path.join(model_dir, f"combined_{FFN_LABEL}_dedup")
         self.use_combined = os.path.isdir(self.combined_dir)
 
     # ── Model loading (called once at startup) ───────────────────────
@@ -516,7 +517,7 @@ class ChatEngine:
                 m_infer = _load_model(path, cu, function_name="infer")
                 print(f" {_t.time()-_t0:.0f}s")
             else:
-                path = _find_model(self.model_dir, f"ffn_LUT4_chunk{ci}")
+                path = _find_model(self.model_dir, f"ffn_{FFN_LABEL}_chunk{ci}")
                 print(f"  chunk {ci} infer  (separate)...", end="", flush=True)
                 import time as _t; _t0 = _t.time()
                 m_infer = _load_model(path, cu)
@@ -533,7 +534,7 @@ class ChatEngine:
             else:
                 try:
                     pf_path = _find_model(
-                        self.model_dir, f"prefill_LUT4_chunk{ci}")
+                        self.model_dir, f"prefill_{FFN_LABEL}_chunk{ci}")
                     print(f"  chunk {ci} prefill (separate)...", end="", flush=True)
                     import time as _t; _t0 = _t.time()
                     m_prefill = _load_model(pf_path, cu)
