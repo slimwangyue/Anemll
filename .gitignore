@@ -60,3 +60,7 @@ qwen3_5_8chunk_models/*
 models/*
 qwen3_5_lut6_models/*
 qwen3_5_explore/*
+ANEOpTest/
+ANETestLoader/
+qwen3_5_stable_models_4chunk/
+qwen3_5_stable_models_6chunk/

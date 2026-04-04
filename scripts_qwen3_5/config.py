@@ -2,8 +2,8 @@
 import os
 
 BATCH_SIZE = 512   # prefill input length
-CTX = 4096         # KV cache / context length
-NUM_CHUNKS = int(os.environ.get("QWEN35_NUM_CHUNKS", 4))  # FFN layer chunks
+CTX = 2048         # KV cache / context length
+NUM_CHUNKS = 6  # FFN layer chunks
 LUT_BITS = 6       # FFN quantization (LUT6)
 LM_HEAD_LUT = 6    # LM head quantization (LUT6)
 PER_CHANNEL = 8    # per-channel group size for embeddings & lm_head

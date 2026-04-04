@@ -30,11 +30,7 @@ import coremltools as ct
 from transformers import AutoTokenizer
 import torch
 
-# ── Config ──
-BATCH_SIZE = 256   # prefill input length
-CTX = 1024         # KV cache / context length
-NUM_CHUNKS = 4
-LUT_BITS = 4
+from config import BATCH_SIZE, CTX, NUM_CHUNKS, LUT_BITS, FFN_LABEL
 
 CONVERSATION_TURNS = [
     "What is a stack in computer science?",
@@ -95,16 +91,36 @@ def _build_continuation(tokenizer, tpl_tokens, user_msg, has_stop_token):
     return continuation
 
 
+def _argmax_from_lm_out(lm_out):
+    """Get argmax token from lm_head output (handles single logits, split logits, or argmax_idx)."""
+    if "logits" in lm_out:
+        return int(np.argmax(lm_out["logits"].flatten()))
+    if "argmax_idx" in lm_out:
+        return int(lm_out["argmax_idx"].flatten()[0])
+    # Split logits: logits1..logitsN
+    split_keys = sorted([k for k in lm_out if k.startswith("logits")],
+                        key=lambda k: int(k.replace("logits", "")))
+    if split_keys:
+        full = np.concatenate([lm_out[k].flatten() for k in split_keys])
+        return int(np.argmax(full))
+    raise KeyError(f"Cannot find logits in lm_head output: {list(lm_out.keys())}")
+
+
 # ── CoreML Engine: Separate models ──
 
 class SeparateEngine:
     def __init__(self, model_dir, label, compute_unit):
+        print(f"  Loading embeddings (CPU_ONLY)...")
         self.embed = ct.models.MLModel(
-            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=compute_unit)
-        self.lmhead = ct.models.MLModel(
-            os.path.join(model_dir, "lm_head.mlpackage"), compute_units=compute_unit)
+            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
+        lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
+        if not os.path.exists(lm_head_path):
+            lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
+        print(f"  Loading lm_head (CPU_ONLY)...")
+        self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
         self.ffns = []
         for ci in range(NUM_CHUNKS):
+            print(f"  Loading ffn chunk {ci} ({compute_unit})...")
             m = ct.models.MLModel(
                 os.path.join(model_dir, f"ffn_{label}_chunk{ci}.mlpackage"),
                 compute_units=compute_unit)
@@ -155,9 +171,7 @@ class SeparateEngine:
                 self.lin_convs[ci] = out['linear_conv_state_out']
                 self.lin_recs[ci] = out['linear_recurrent_state_out']
         lm_out = self.lmhead.predict({"hidden_states": hidden.astype(np.float16)})
-        if "logits" in lm_out:
-            return int(np.argmax(lm_out["logits"].flatten()))
-        return int(lm_out["argmax_idx"].flatten()[0])
+        return _argmax_from_lm_out(lm_out)
 
     def prefill_and_decode(self, token_ids, start_pos, max_gen, stop_ids):
         t0 = time.time()
@@ -193,12 +207,17 @@ class SeparateEngine:
 
 class DedupEngine:
     def __init__(self, combined_dir, model_dir, compute_unit):
+        print(f"  Loading embeddings (CPU_ONLY)...")
         self.embed = ct.models.MLModel(
-            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=compute_unit)
-        self.lmhead = ct.models.MLModel(
-            os.path.join(model_dir, "lm_head.mlpackage"), compute_units=compute_unit)
+            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
+        lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
+        if not os.path.exists(lm_head_path):
+            lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
+        print(f"  Loading lm_head (CPU_ONLY)...")
+        self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
         self.ffns = []
         for ci in range(NUM_CHUNKS):
+            print(f"  Loading dedup chunk {ci} ({compute_unit})...")
             m = ct.models.MLModel(
                 os.path.join(combined_dir, f"chunk{ci}.mlpackage"),
                 compute_units=compute_unit, function_name="infer")
@@ -256,9 +275,7 @@ class DedupEngine:
                 self.lin_convs[ci] = out['linear_conv_state_out']
                 self.lin_recs[ci] = out['linear_recurrent_state_out']
         lm_out = self.lmhead.predict({"hidden_states": hidden.astype(np.float16)})
-        if "logits" in lm_out:
-            return int(np.argmax(lm_out["logits"].flatten()))
-        return int(lm_out["argmax_idx"].flatten()[0])
+        return _argmax_from_lm_out(lm_out)
 
     def prefill_and_decode(self, token_ids, start_pos, max_gen, stop_ids):
         t0 = time.time()
@@ -374,18 +391,39 @@ def main():
                         help="Max tokens to generate per turn (default: 40)")
     parser.add_argument("--skip-separate", action="store_true",
                         help="Skip separate model validation (only test dedup)")
+    parser.add_argument("--chunks", type=int, default=None,
+                        help="Override number of chunks (default: from config.py)")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model_dir
 
-    label = f"LUT{LUT_BITS}"
+    global NUM_CHUNKS
+    if args.chunks is not None:
+        NUM_CHUNKS = args.chunks
+    else:
+        # Auto-detect chunk count from combined_LUT*_dedup/chunk*.mlpackage
+        import glob as _glob
+        for pattern in [
+            os.path.join(args.model_dir, f"combined_{FFN_LABEL}_dedup", "chunk*.mlpackage"),
+            os.path.join(args.model_dir, f"ffn_{FFN_LABEL}_chunk*.mlpackage"),
+        ]:
+            found = _glob.glob(pattern)
+            if found:
+                NUM_CHUNKS = len(found)
+                break
+
+    label = FFN_LABEL
     combined_dir = os.path.join(args.model_dir, f"combined_{label}_dedup")
     compute_unit = ct.ComputeUnit.CPU_AND_NE
 
-    # Verify required files
-    required = ["embeddings.mlpackage", "lm_head.mlpackage"]
+    # Verify required files — accept either lm_head_logits or lm_head
+    lm_head_name = "lm_head_logits.mlpackage"
+    if not os.path.exists(os.path.join(args.model_dir, lm_head_name)):
+        lm_head_name = "lm_head.mlpackage"
+    required = ["embeddings.mlpackage", lm_head_name]
     for ci in range(NUM_CHUNKS):
-        required.append(f"ffn_{label}_chunk{ci}.mlpackage")
+        if not args.skip_separate:
+            required.append(f"ffn_{label}_chunk{ci}.mlpackage")
         required.append(os.path.join(f"combined_{label}_dedup", f"chunk{ci}.mlpackage"))
     missing = [f for f in required if not os.path.exists(os.path.join(args.model_dir, f))]
     if missing:

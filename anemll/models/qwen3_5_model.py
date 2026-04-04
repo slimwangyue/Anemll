@@ -613,21 +613,46 @@ class Qwen35LinearConvStage(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         k = self.linear_conv_kernel_dim
         seq_len = expected_seq_len if expected_seq_len is not None else mixed_qkv_bc1s.shape[-1]
+
+        # conv_state: [B, C, k]
+        # mixed_qkv_bc1s: [B, C, 1, S]
+        # stacked: [B, C, 1, k + S]
         stacked = torch.cat([conv_state.to(mixed_qkv_bc1s.dtype).unsqueeze(2), mixed_qkv_bc1s], dim=-1)
+
         out = self.conv2d(stacked.to(self.conv2d.weight.dtype))
         out = F.silu(out[:, :, :, -seq_len:])
+
         if valid_len is not None:
-            # Extract correct next_state using only valid positions.
-            # stacked layout: [old_conv_state(k), new_input(seq_len)]
-            # Correct last-k is at positions valid_len..valid_len+k-1.
-            # Expand BEFORE int64 cast to avoid aten::Int on (1,) tensors.
-            offsets = torch.arange(k, device=stacked.device, dtype=torch.int32)
-            idx = (valid_len + offsets).reshape(1, 1, 1, k).expand(
-                stacked.shape[0], stacked.shape[1], stacked.shape[2], k
-            ).to(torch.int64)
-            next_state = torch.gather(stacked, dim=3, index=idx).squeeze(2)
+            # Expect scalar valid_len or shape [1]
+            valid_len_i64 = valid_len.to(torch.int64).reshape(-1)
+            if valid_len_i64.numel() != 1:
+                raise ValueError(f"Expected scalar valid_len, got shape {tuple(valid_len.shape)}")
+
+            start = valid_len_i64[0]  # scalar int64 tensor
+            total_len = stacked.shape[-1]  # k + seq_len
+
+            # Indices in stacked that we want:
+            # [valid_len, valid_len+1, ..., valid_len+k-1]
+            idx = start + torch.arange(k, device=stacked.device, dtype=torch.int64)  # [k]
+
+            # Bounds check
+            if torch.any(idx < 0) or torch.any(idx >= total_len):
+                raise ValueError(
+                    f"Computed next_state indices {idx.tolist()} out of range for stacked length {total_len}"
+                )
+
+            # one-hot / mask: [k, total_len]
+            mask = F.one_hot(idx, num_classes=total_len).to(stacked.dtype)
+
+            # stacked: [B, C, 1, total_len] -> [B, C, total_len]
+            stacked_3d = stacked.squeeze(2)
+
+            # [B, C, 1, total_len] * [1, 1, k, total_len] -> [B, C, k, total_len]
+            # sum over total_len -> [B, C, k]
+            next_state = (stacked_3d.unsqueeze(2) * mask.unsqueeze(0).unsqueeze(0)).sum(dim=-1)
         else:
             next_state = stacked[:, :, :, -k:].squeeze(2)
+
         return out.to(mixed_qkv_bc1s.dtype), next_state.to(mixed_qkv_bc1s.dtype)
 
 
@@ -950,7 +975,7 @@ class Qwen35LinearAttention(nn.Module):
         value: torch.Tensor,
         g: torch.Tensor,
         beta: torch.Tensor,
-        chunk_size: int = 64,
+        chunk_size: int = 16,
         initial_state: torch.Tensor | None = None,
         output_final_state: bool = True,
         expected_batch_size: int | None = None,
@@ -1003,7 +1028,7 @@ class Qwen35LinearAttention(nn.Module):
         g = (tril_ones @ g.unsqueeze(-1)).squeeze(-1)
         # ANE-legal tril: multiply by tril mask instead of .tril() method
         decay_raw = (g.unsqueeze(-1) - g.unsqueeze(-2)) * tril_ones
-        decay_mask = (decay_raw.exp().float()) * tril_ones
+        decay_mask = decay_raw.exp() * tril_ones
         # ANE-legal masked_fill: multiply by strict-lower triangular mask instead of masked_fill
         attn = -((k_beta @ key.transpose(-1, -2)) * decay_mask) * strict_lower
         attn_rows = [attn[..., 0:1, :]]

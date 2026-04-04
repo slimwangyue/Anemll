@@ -132,7 +132,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
   <h1>Qwen3.5-4B on ANE</h1>
   <span class="info" id="status">Loading models...</span>
   <div>
-    <button id="thinkBtn" class="active" onclick="toggleThink()">Think: ON</button>
+    <button id="thinkBtn" onclick="toggleThink()">Think: OFF</button>
     <button onclick="toggleSettings()">Settings</button>
     <button onclick="resetChat()">New Chat</button>
   </div>
@@ -140,13 +140,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <div class="settings" id="settings">
   <label>Max tokens: <input type="number" id="maxTokens" value="512" min="16" max="2048"></label>
   <label>Show thinking: <input type="checkbox" id="showThink" checked></label>
-  <label>Thinking mode: <input type="checkbox" id="enableThinking" checked></label>
+  <label>Thinking mode: <input type="checkbox" id="enableThinking"></label>
   <label>Repetition guard: <input type="checkbox" id="repGuard" checked></label>
-  <label>Temperature: <input type="number" id="temperature" value="0.7" min="0.0" max="2.0" step="0.05"></label>
+  <label>Temperature: <input type="number" id="temperature" value="0.0" min="0.0" max="2.0" step="0.05"></label>
   <label>Top-p: <input type="number" id="topP" value="0.9" min="0.0" max="1.0" step="0.05"></label>
   <label>Rep penalty: <input type="number" id="repPenalty" value="1.1" min="1.0" max="2.0" step="0.05"></label>
   <label>Pres penalty: <input type="number" id="presPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
-  <label>Freq penalty: <input type="number" id="freqPenalty" value="0.2" min="0.0" max="2.0" step="0.1"></label>
+  <label>Freq penalty: <input type="number" id="freqPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
 </div>
 <div id="chat"></div>
 <div class="typing" id="typing"></div>
@@ -226,7 +226,7 @@ async function sendMsg() {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking, repetition_guard: document.getElementById('repGuard').checked, temperature: parseFloat(document.getElementById('temperature').value) || 0.7, top_p: parseFloat(document.getElementById('topP').value) || 0.9, repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.1, presence_penalty: parseFloat(document.getElementById('presPenalty').value) || 0.0, frequency_penalty: parseFloat(document.getElementById('freqPenalty').value) || 0.2})
+      body: JSON.stringify({message: text, max_tokens: maxTokens, enable_thinking: enableThinking, repetition_guard: document.getElementById('repGuard').checked, temperature: parseFloat(document.getElementById('temperature').value), top_p: parseFloat(document.getElementById('topP').value) || 0.9, repetition_penalty: parseFloat(document.getElementById('repPenalty').value) || 1.0, presence_penalty: parseFloat(document.getElementById('presPenalty').value) || 0.0, frequency_penalty: parseFloat(document.getElementById('freqPenalty').value) || 0.0})
     });
 
     const reader = resp.body.getReader();
@@ -338,10 +338,21 @@ document.getElementById('input').focus();
 
 # ── Constants ────────────────────────────────────────────────────────
 
-BLOCK_SIZE = 256        # logical prefill block size (matches model export)
-BATCH_SIZE = 256        # prefill batch size (must match compiled model)
+BLOCK_SIZE = 512        # logical prefill block size (matches model export)
+BATCH_SIZE = 512        # prefill batch size (must match compiled model: config.py BATCH_SIZE=512)
 MIN_GEN_RESERVE = 100   # minimum tokens reserved for generation after prefill
-PREFILL_CROSSOVER = 32  # below this many tokens, sequential is faster than batch
+SYSTEM_PROMPT = None    # no system prompt by default (better quality for quantized models)
+
+# Batch prefill uses _chunk_gated_delta_rule (parallelised) while sequential
+# infer uses _recurrent_gated_delta_rule (token-by-token).  On ANE with LUT6
+# quantization, the chunked algorithm accumulates float16 precision errors
+# (~3% per linear layer) that compound across 6 chunks / ~36 layers, plus
+# padding chunks multiply recurrent state by exp(0) ≈ 1±ε per chunk.  With
+# 16 tokens padded to 512 (31 padding chunks), conv_state diverges by
+# max_abs=21.6, rec_state by 3.18 → decode tokens completely wrong.
+# Disable batched prefill until re-export with flexible shapes or float32
+# recurrence is implemented.
+PREFILL_CROSSOVER = 999999  # sequential only — batched prefill too inaccurate on ANE
 
 
 # ── Repetition Detection ─────────────────────────────────────────────
@@ -401,8 +412,13 @@ def _load_model(path, compute_unit, function_name=None):
 
 
 def _find_model(base_dir, name):
-    """Find model path, preferring .mlmodelc over .mlpackage."""
-    for ext in (".mlmodelc", ".mlpackage"):
+    """Find model path, preferring .mlpackage over .mlmodelc.
+
+    coremltools cannot load .mlmodelc directly — use .mlpackage for
+    models loaded via ct.models.MLModel.  .mlmodelc is only usable
+    via ct.models.CompiledMLModel (no function_name support).
+    """
+    for ext in (".mlpackage", ".mlmodelc"):
         p = os.path.join(base_dir, name + ext)
         if os.path.exists(p):
             return p
@@ -424,23 +440,30 @@ class ChatEngine:
     Models are loaded once at startup and kept in memory.
     """
 
-    def __init__(self, model_dir, hf_path, ctx=1024, num_chunks=4):
+    def __init__(self, model_dir, hf_path, ctx=1024, num_chunks=4,
+                 embed_path=None, lm_head_path=None, ffn_dir=None,
+                 system_prompt=None):
         self.model_dir = model_dir
         self.hf_path = hf_path
         self.ctx = ctx
         self.num_chunks = num_chunks
+        self.embed_path = embed_path
+        self.lm_head_path = lm_head_path
+        self.ffn_dir = ffn_dir
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
         self.ready = False
         self.lock = threading.Lock()
 
         # Conversation state
-        self.messages = []     # list of {"role": ..., "content": ...}
+        self._init_messages()
         self.pos = 0           # next write position in KV cache (0..ctx-1)
         self.states = None     # CoreML model states (KV cache)
         self.lin_convs = None  # linear conv states per chunk
         self.lin_recs = None   # linear recurrent states per chunk
 
-        # Template token IDs (filled after tokenizer loads)
-        self.tpl_tokens = {}
+        # Special token IDs (filled after tokenizer loads)
+        self.think_token_id = None
+        self.endthink_token_id = None
 
         # Detect combined dedup directory
         self.combined_dir = os.path.join(model_dir, f"combined_{FFN_LABEL}_dedup")
@@ -453,7 +476,7 @@ class ChatEngine:
 
         Loads separate infer and prefill MLModel instances for each
         FFN chunk.  The two instances share KV-cache state but accept
-        different input shapes (seq_len=1 vs seq_len=256).
+        different input shapes (seq_len=1 vs seq_len=512).
         """
         cu = ct.ComputeUnit.CPU_AND_NE
 
@@ -461,35 +484,48 @@ class ChatEngine:
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.hf_path, use_fast=False)
         self._build_stop_ids()
-        self._build_template_tokens()
+        self._build_special_token_ids()
 
         print("[engine] Loading embeddings...")
-        self.embed = _load_model(
-            _find_model(self.model_dir, "embeddings"), cu)
+        if self.embed_path:
+            self.embed = _load_model(self.embed_path, cu)
+        else:
+            self.embed = _load_model(
+                _find_model(self.model_dir, "embeddings"), cu)
 
         print("[engine] Loading lm_head...")
         # Prefer logits lm_head (enables logit-space penalties)
-        try:
-            lmhead_path = _find_model(self.model_dir, "lm_head_logits")
-            self.lmhead = _load_model(lmhead_path, cu)
+        lm_loaded = False
+        if self.lm_head_path:
+            self.lmhead = _load_model(self.lm_head_path, cu)
             self.lmhead_mode = "logits"
-            print(f"  Loaded logits lm_head (penalties enabled)")
-        except FileNotFoundError:
-            self.lmhead = _load_model(
-                _find_model(self.model_dir, "lm_head"), cu)
-            # Detect output type
-            spec = self.lmhead.get_spec()
-            out_names = [o.name for o in spec.description.output]
-            self.lmhead_mode = "logits" if ("logits" in out_names
-                                            or "output_logits" in out_names
-                                            ) else "argmax"
-            print(f"  Loaded lm_head (mode={self.lmhead_mode})")
+            lm_loaded = True
+            print(f"  Loaded logits lm_head from {self.lm_head_path}")
+        if not lm_loaded:
+            try:
+                lmhead_path = _find_model(self.model_dir, "lm_head_logits")
+                self.lmhead = _load_model(lmhead_path, cu)
+                self.lmhead_mode = "logits"
+                print(f"  Loaded logits lm_head (penalties enabled)")
+            except FileNotFoundError:
+                self.lmhead = _load_model(
+                    _find_model(self.model_dir, "lm_head"), cu)
+                # Detect output type
+                spec = self.lmhead.get_spec()
+                out_names = [o.name for o in spec.description.output]
+                self.lmhead_mode = "logits" if ("logits" in out_names
+                                                or "output_logits" in out_names
+                                                ) else "argmax"
+                print(f"  Loaded lm_head (mode={self.lmhead_mode})")
         # Detect split logits (logits1..logitsN) vs single output
         if self.lmhead_mode == "logits":
             spec = self.lmhead.get_spec()
             out_names = [o.name for o in spec.description.output]
-            split_keys = sorted([n for n in out_names if n.startswith("logits")
-                                 and n[6:].isdigit()])
+            split_keys = sorted(
+                [n for n in out_names
+                 if n.startswith("logits") and n[6:].isdigit()],
+                key=lambda x: int(x[6:])  # numeric order: logits1..logits16
+            )
             if split_keys:
                 self.logits_keys = split_keys  # ["logits1", ..., "logits16"]
                 self.logits_key = None
@@ -501,8 +537,13 @@ class ChatEngine:
 
         print("[engine] Loading FFN chunks (infer + prefill)...")
         self.ffns = []       # infer instances  (seq_len=1)
-        self.prefills = []   # prefill instances (seq_len=256)
+        self.prefills = []   # prefill instances (seq_len=512)
         self.has_prefill = False
+
+        # Override combined_dir if --ffn-dir was given
+        if self.ffn_dir:
+            self.combined_dir = self.ffn_dir
+            self.use_combined = os.path.isdir(self.ffn_dir)
 
         for ci in range(self.num_chunks):
             # --- infer instance ---
@@ -565,7 +606,7 @@ class ChatEngine:
         self._reset_states()
         self.ready = True
         mode = "combined-dedup" if self.use_combined else "separate"
-        prefill_mode = "batch-256" if self.has_prefill else "sequential"
+        prefill_mode = f"batch-{BATCH_SIZE}" if self.has_prefill else "sequential"
         print(f"[engine] Ready! CTX={self.ctx}, BATCH={BATCH_SIZE}, "
               f"crossover={PREFILL_CROSSOVER}, "
               f"mode={mode}, prefill={prefill_mode}, "
@@ -580,60 +621,81 @@ class ChatEngine:
             if tok is not None and tok != self.tokenizer.unk_token_id:
                 self.stop_ids.add(tok)
 
-    def _build_template_tokens(self):
+    def _build_special_token_ids(self):
+        """Look up <think> and </think> token IDs for logit suppression."""
         t = self.tokenizer
-        self.tpl_tokens = {
-            "im_start": t.convert_tokens_to_ids("<|im_start|>"),
-            "im_end": t.convert_tokens_to_ids("<|im_end|>"),
-            "nl": t.encode("\n", add_special_tokens=False),
-            "think": t.convert_tokens_to_ids("<think>"),
-            "endthink": t.convert_tokens_to_ids("</think>"),
-            "user": t.encode("user", add_special_tokens=False),
-            "assistant": t.encode("assistant", add_special_tokens=False),
-        }
+        self.think_token_id = t.convert_tokens_to_ids("<think>")
+        self.endthink_token_id = t.convert_tokens_to_ids("</think>")
+        if self.think_token_id == t.unk_token_id:
+            self.think_token_id = None
+        if self.endthink_token_id == t.unk_token_id:
+            self.endthink_token_id = None
 
     def _detect_shapes(self):
-        """Read input shapes from model spec for state initialization."""
-        self.inp_map = {}
-        try:
-            spec = self.ffns[0].get_spec()
-            fn_inputs = None
-            if self.use_combined and hasattr(spec.description, 'functions'):
-                for fn in spec.description.functions:
-                    if fn.name == "infer":
-                        fn_inputs = fn.input
-                        break
-            if fn_inputs is None:
-                fn_inputs = spec.description.input
-            for inp in fn_inputs:
-                try:
-                    self.inp_map[inp.name] = tuple(
-                        inp.type.multiArrayType.shape)
-                except Exception:
-                    pass
-        except Exception:
-            print("[engine] Using default input shapes")
-            self.inp_map = {
-                'linear_conv_state': (8, 1024, 32),
-                'linear_recurrent_state': (8, 32, 128, 128),
-            }
+        """Read per-chunk input shapes from model spec for state initialization.
+
+        Layer counts may differ across chunks (e.g. 6/6/5/5/5/5),
+        so linear state shapes must be detected per-chunk.
+        """
+        self.per_chunk_conv_shapes = []
+        self.per_chunk_rec_shapes = []
+        for ci in range(self.num_chunks):
+            conv_shape = (6, 1024, 32)   # fallback
+            rec_shape = (6, 32, 128, 128)
+            try:
+                spec = self.ffns[ci].get_spec()
+                fn_inputs = None
+                if self.use_combined and hasattr(spec.description, 'functions'):
+                    for fn in spec.description.functions:
+                        if fn.name == "infer":
+                            fn_inputs = fn.input
+                            break
+                if fn_inputs is None:
+                    fn_inputs = spec.description.input
+                for inp in fn_inputs:
+                    try:
+                        name = inp.name
+                        shp = tuple(inp.type.multiArrayType.shape)
+                        if name == 'linear_conv_state':
+                            conv_shape = shp
+                        elif name == 'linear_recurrent_state':
+                            rec_shape = shp
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self.per_chunk_conv_shapes.append(conv_shape)
+            self.per_chunk_rec_shapes.append(rec_shape)
+            print(f"    chunk{ci} state: conv={conv_shape}, rec={rec_shape}")
+        # Keep inp_map for backward compat (use chunk 0 shapes)
+        self.inp_map = {
+            'linear_conv_state': self.per_chunk_conv_shapes[0],
+            'linear_recurrent_state': self.per_chunk_rec_shapes[0],
+        }
 
     def _reset_states(self):
         """Reset KV cache, linear states, and position to zero."""
         self.states = [m.make_state() for m in self.ffns]
         self.lin_convs = [
-            np.zeros(self.inp_map['linear_conv_state'], dtype=np.float16)
-            for _ in range(self.num_chunks)]
+            np.zeros(self.per_chunk_conv_shapes[ci], dtype=np.float16)
+            for ci in range(self.num_chunks)]
         self.lin_recs = [
-            np.zeros(self.inp_map['linear_recurrent_state'], dtype=np.float16)
-            for _ in range(self.num_chunks)]
+            np.zeros(self.per_chunk_rec_shapes[ci], dtype=np.float16)
+            for ci in range(self.num_chunks)]
         self.pos = 0
+
+    def _init_messages(self):
+        """Initialize message list, optionally with system prompt."""
+        if self.system_prompt:
+            self.messages = [{"role": "system", "content": self.system_prompt}]
+        else:
+            self.messages = []
 
     def reset(self):
         """Full reset: clear KV cache and conversation history."""
         with self.lock:
             self._reset_states()
-            self.messages = []
+            self._init_messages()
             print(f"[cache] Full reset. pos=0, messages=0")
 
     # ── Core model step ──────────────────────────────────────────────
@@ -779,8 +841,12 @@ class ChatEngine:
                 self.lin_convs[ci] = out['linear_conv_state_out']
                 self.lin_recs[ci] = out['linear_recurrent_state_out']
 
-        # Last chunk already extracts the last valid token's hidden
-        # state and applies RMSNorm → shape (1, 1, hidden_size).
+        # Extract last valid token's hidden state for lm_head.
+        # Prefill outputs hidden [1, BATCH_SIZE, 2560] but lm_head expects
+        # [1, 1, 2560].  Slice out the (valid_len-1)-th token.
+        if hidden.ndim >= 3 and hidden.shape[1] > 1:
+            hidden = hidden[:, valid_len - 1:valid_len, :]
+
         lm_out = self.lmhead.predict(
             {"hidden_states": hidden.astype(np.float16)})
         if self.lmhead_mode == "logits":
@@ -848,18 +914,18 @@ class ChatEngine:
 
     # ── Prefill: process prompt tokens ───────────────────────────────
     #
-    # Uses true batched prefill (256 tokens at once) for all chunks
+    # Uses true batched prefill (512 tokens at once) for all chunks
     # when prefill models are available and input length exceeds the
     # crossover threshold.  Below the threshold, sequential is faster
-    # because the batch always processes a full 256-token frame.
+    # because the batch always processes a full 512-token frame.
 
     def _process_prompt(self, prompt_tokens):
         """PREFILL PHASE: process all prompt tokens through the model.
 
         Strategy (when has_prefill=True):
           - If total tokens >= PREFILL_CROSSOVER:
-              Process all tokens in 256-token batched blocks.
-              Full blocks use valid_len=256 (no padding).
+              Process all tokens in 512-token batched blocks.
+              Full blocks use valid_len=512 (no padding).
               The final tail block uses valid_len=len(tail) with zero-padding.
           - If total tokens < PREFILL_CROSSOVER:
               Sequential token-by-token (skip lm_head except last).
@@ -958,9 +1024,12 @@ class ChatEngine:
 
         # Try dropping oldest turn pairs until prompt fits
         retained = list(self.messages)
-        while len(retained) > 1:
-            if len(retained) >= 3:
-                retained = retained[2:]  # drop first user+assistant pair
+        # Preserve system message (index 0) when trimming
+        sys_msg = retained[0] if retained and retained[0]["role"] == "system" else None
+        while len(retained) > (2 if sys_msg else 1):
+            start = 1 if sys_msg else 0  # skip system msg
+            if len(retained) - start >= 3:
+                retained = (retained[:1] if sys_msg else []) + retained[start + 2:]
             else:
                 break
 
@@ -975,8 +1044,8 @@ class ChatEngine:
                 self._reset_states()
                 return test_tokens, True
 
-        # Fallback: keep only the current user message
-        retained = [self.messages[-1]]
+        # Fallback: keep system prompt + current user message
+        retained = ([sys_msg] if sys_msg else []) + [self.messages[-1]]
         test_tokens = self._tokenize_messages(retained, enable_thinking)
         n_total = (len(self.messages) - 1) // 2
         print(f"[cache] Trimmed ALL {n_total} old turn(s), "
@@ -988,40 +1057,35 @@ class ChatEngine:
     def _tokenize_messages(self, messages, enable_thinking):
         """Tokenize message list using apply_chat_template."""
         input_ids = self.tokenizer.apply_chat_template(
-            messages, return_tensors="pt",
+            messages,
             add_generation_prompt=True,
             enable_thinking=enable_thinking)
         if hasattr(input_ids, 'input_ids'):
             input_ids = input_ids.input_ids
-        return input_ids[0].tolist()
+            return input_ids[0].tolist()
+        return list(input_ids)
 
     # ── Multi-round conversation ─────────────────────────────────────
 
-    def _build_continuation_tokens(self, user_msg, enable_thinking=True):
-        """Build incremental token sequence for a follow-up turn.
+    def _get_continuation_delta(self, user_msg, enable_thinking):
+        """Compute continuation tokens for a follow-up turn.
 
-        Produces: <|im_end|> NL <|im_start|>user NL {msg} <|im_end|>
-                  NL <|im_start|>assistant NL [<think> NL]
+        Uses apply_chat_template to render the new user message as a
+        single-turn prompt, then prepends <|im_end|>\\n to close the
+        previous assistant turn (whose stop token was predicted but
+        not fed back into the model).
 
-        The leading <|im_end|> closes the previous assistant turn.
-        Always included because the stop token from the previous
-        decode was predicted but never fed back into the model.
+        This guarantees the prompt always matches the official Jinja
+        template exactly — no manual token construction.
         """
-        t = self.tpl_tokens
-        tk = self.tokenizer
-        nl = t["nl"]
-        tokens = []
-        tokens += [t["im_end"]] + nl            # close previous turn
-        tokens += [t["im_start"]] + t["user"] + nl  # new user turn
-        tokens += tk.encode(user_msg, add_special_tokens=False)
-        tokens += [t["im_end"]] + nl
-        tokens += [t["im_start"]] + t["assistant"] + nl  # assistant prompt
-        if enable_thinking:
-            tokens += [t["think"]] + nl
-        else:
-            # Empty think block: <think>\n\n</think>\n\n
-            tokens += [t["think"]] + nl + nl + [t["endthink"]] + nl + nl
-        return tokens
+        # Render just the new user message through the official template
+        new_turn = [{"role": "user", "content": user_msg}]
+        new_turn_tokens = self._tokenize_messages(
+            new_turn, enable_thinking)
+        # Prepend <|im_end|>\n to close the previous assistant turn
+        im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+        nl_ids = self.tokenizer.encode("\n", add_special_tokens=False)
+        return [im_end_id] + nl_ids + new_turn_tokens
 
     # ── Main chat stream ─────────────────────────────────────────────
 
@@ -1033,7 +1097,7 @@ class ChatEngine:
         """Generator yielding SSE events for a streaming response.
 
         Two-phase pipeline:
-          1. PREFILL — process prompt tokens (sequentially, in 256-tok blocks)
+          1. PREFILL — process prompt tokens (sequentially, in 512-tok blocks)
           2. DECODE  — generate response tokens one at a time
         Both phases use the same infer-function models. No switching.
 
@@ -1041,22 +1105,25 @@ class ChatEngine:
         repetition is detected (sliding-window 5-gram, threshold=3).
         """
         with self.lock:
-            is_first_turn = len(self.messages) == 0
+            is_first_turn = not any(
+                m["role"] == "user" for m in self.messages)
 
             self.messages.append({"role": "user", "content": user_msg})
 
-            # Build prompt tokens
+            # Build prompt tokens — always via apply_chat_template
             if is_first_turn:
                 prompt_tokens = self._tokenize_messages(
                     self.messages, enable_thinking)
             else:
-                prompt_tokens = self._build_continuation_tokens(
+                prompt_tokens = self._get_continuation_delta(
                     user_msg, enable_thinking)
 
             turn_num = (len(self.messages) + 1) // 2
             print(f"\n{'='*60}")
             print(f"[chat] Turn {turn_num}: "
                   f"\"{user_msg[:60]}{'...' if len(user_msg)>60 else ''}\"")
+            print(f"[chat] prompt_tokens ({len(prompt_tokens)}): {prompt_tokens[:30]}{'...' if len(prompt_tokens)>30 else ''}")
+            print(f"[chat] prompt decoded: {repr(self.tokenizer.decode(prompt_tokens)[:200])}")
             print(f"[chat] prompt={len(prompt_tokens)} tok, "
                   f"cache={self.pos}/{self.ctx} "
                   f"({self.pos*100//self.ctx}%), "
@@ -1090,11 +1157,17 @@ class ChatEngine:
             # ── DECODE PHASE ──
             rep_detector = RepetitionDetector() if repetition_guard else None
             generated_ids = [last_next]
+            print(f"[decode] first_token={last_next} = {repr(self.tokenizer.decode([last_next]))}")
             if rep_detector:
                 rep_detector.add_token(last_next)
             text_so_far = self.tokenizer.decode(
-                [last_next], skip_special_tokens=False)
-            yield {"type": "token", "text": text_so_far, "id": last_next}
+                [last_next], skip_special_tokens=True)
+            if text_so_far:
+                yield {"type": "token", "text": text_so_far, "id": last_next}
+
+            # Get <think> and </think> token IDs to suppress when thinking is OFF
+            think_token_id = self.think_token_id
+            endthink_token_id = self.endthink_token_id
 
             has_penalties = (repetition_penalty > 1.0
                              or presence_penalty != 0.0
@@ -1112,11 +1185,20 @@ class ChatEngine:
                 next_id, logits = self._step(generated_ids[-1], self.pos)
                 self.pos += 1
                 if logits is not None and has_penalties:
+                    # Suppress <think> and </think> tokens when thinking is OFF
+                    if not enable_thinking:
+                        if think_token_id is not None:
+                            logits[think_token_id] = -1e9
+                        if endthink_token_id is not None:
+                            logits[endthink_token_id] = -1e9
                     next_id = self._apply_penalties(
                         logits, generated_ids,
                         repetition_penalty, presence_penalty,
                         frequency_penalty, temperature, top_p)
                 generated_ids.append(next_id)
+
+                if len(generated_ids) <= 10:
+                    print(f"[decode] tok[{len(generated_ids)-1}]={next_id} = {repr(self.tokenizer.decode([next_id]))}")
 
                 if rep_detector and rep_detector.add_token(next_id):
                     stopped_by_rep = True
@@ -1128,7 +1210,7 @@ class ChatEngine:
                     break
 
                 new_text = self.tokenizer.decode(
-                    generated_ids, skip_special_tokens=False)
+                    generated_ids, skip_special_tokens=True)
                 delta = new_text[len(text_so_far):]
                 text_so_far = new_text
                 if delta:
@@ -1137,17 +1219,15 @@ class ChatEngine:
             elapsed = time.time() - t0
             decode_count = len(generated_ids)
 
-            # Store assistant response
+            # Store assistant response — the official template handles
+            # <think> parsing automatically via the content field.
+            # When thinking=ON the model generates: reasoning\n</think>\n\nanswer
+            # When thinking=OFF the model generates just the answer.
             full_text = self.tokenizer.decode(
                 generated_ids, skip_special_tokens=True)
-            if enable_thinking:
-                self.messages.append({
-                    "role": "assistant",
-                    "content": "<think>\n" + full_text})
-            else:
-                self.messages.append({
-                    "role": "assistant",
-                    "content": full_text})
+            self.messages.append({
+                "role": "assistant",
+                "content": full_text})
 
             stop_reason = ("repetition" if stopped_by_rep
                           else "eos" if (generated_ids
@@ -1230,13 +1310,13 @@ class ChatHandler(BaseHTTPRequestHandler):
                 return
 
             max_tokens = min(int(data.get("max_tokens", 512)), 2048)
-            enable_thinking = data.get("enable_thinking", True)
+            enable_thinking = data.get("enable_thinking", False)
             repetition_guard = data.get("repetition_guard", True)
-            temperature = float(data.get("temperature", 0.7))
+            temperature = float(data.get("temperature", 0.0))
             top_p = float(data.get("top_p", 0.9))
             repetition_penalty = float(data.get("repetition_penalty", 1.1))
             presence_penalty = float(data.get("presence_penalty", 0.0))
-            frequency_penalty = float(data.get("frequency_penalty", 0.2))
+            frequency_penalty = float(data.get("frequency_penalty", 0.0))
 
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1275,11 +1355,43 @@ def main():
                         help="Tokenizer dir (default: same as --model-dir)")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--ctx", type=int, default=1024)
+    parser.add_argument("--num-chunks", type=int, default=None,
+                        help="Number of FFN chunks (auto-detected if not set)")
+    parser.add_argument("--embed", default=None,
+                        help="Explicit path to embeddings model")
+    parser.add_argument("--lm-head", default=None,
+                        help="Explicit path to lm_head model")
+    parser.add_argument("--ffn-dir", default=None,
+                        help="Directory containing chunk{i} combined models")
+    parser.add_argument("--system-prompt", default=None,
+                        help="System prompt (default: none)")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model_dir
 
-    engine = ChatEngine(args.model_dir, args.tokenizer, ctx=args.ctx)
+    # Auto-detect num_chunks if not specified
+    num_chunks = args.num_chunks
+    if num_chunks is None:
+        ffn_base = args.ffn_dir or os.path.join(
+            args.model_dir, f"combined_{FFN_LABEL}_dedup")
+        if os.path.isdir(ffn_base):
+            num_chunks = sum(
+                1 for f in os.listdir(ffn_base)
+                if f.startswith("chunk") and (f.endswith(".mlpackage") or f.endswith(".mlmodelc"))
+            )
+            # Each chunk has mlpackage+mlmodelc, deduplicate
+            if num_chunks > 6:
+                num_chunks //= 2
+        if not num_chunks:
+            num_chunks = 4  # fallback
+        print(f"  Auto-detected {num_chunks} FFN chunks")
+
+    engine = ChatEngine(args.model_dir, args.tokenizer, ctx=args.ctx,
+                        num_chunks=num_chunks,
+                        embed_path=args.embed,
+                        lm_head_path=args.lm_head,
+                        ffn_dir=args.ffn_dir,
+                        system_prompt=args.system_prompt)
 
     print(f"\n  Model dir: {args.model_dir}")
     print(f"  CTX: {args.ctx}, BLOCK_SIZE: {BLOCK_SIZE}, "

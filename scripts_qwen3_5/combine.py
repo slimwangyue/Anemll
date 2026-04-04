@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--input", default=DEFAULT_OUTPUT,
                         help="Directory with exported .mlpackage files")
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument("--only-chunk", type=int, default=None,
+                        help="Combine only the specified chunk index")
     args = parser.parse_args()
 
     label = FFN_LABEL
@@ -59,11 +61,14 @@ def main():
     print("=" * 70)
     print("  Qwen3.5-4B ANEMLL-Dedup Combine — Milestone 2.1")
     print(f"  Functions per chunk: infer + prefill")
+    if args.only_chunk is not None:
+        print(f"  Only chunk: {args.only_chunk}")
     print("=" * 70)
 
     t_total = time.time()
     total_size = 0.0
-    for ci in range(NUM_CHUNKS):
+    chunk_indices = [args.only_chunk] if args.only_chunk is not None else list(range(NUM_CHUNKS))
+    for ci in chunk_indices:
         combined_path = os.path.join(combined_dir, f"chunk{ci}.mlpackage")
         if args.skip_existing and os.path.exists(combined_path):
             sz = dir_size_mb(combined_path)
@@ -72,11 +77,20 @@ def main():
             continue
 
         dec_path = os.path.join(args.input, f"ffn_{label}_chunk{ci}.mlpackage")
-        pf_path = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
         sources = [
             (dec_path, "main", "infer"),
-            (pf_path, "main", "prefill"),
         ]
+        # Support both old naming (prefill_{label}_chunk{ci}.mlpackage) and
+        # new bucket-based naming (prefill_{label}_chunk{ci}_bs{bucket}.mlpackage).
+        pf_path_old = os.path.join(args.input, f"prefill_{label}_chunk{ci}.mlpackage")
+        pf_path_bs = os.path.join(args.input, f"prefill_{label}_chunk{ci}_bs{BATCH_SIZE}.mlpackage")
+        if os.path.exists(pf_path_bs):
+            sources.append((pf_path_bs, "main", "prefill"))
+        elif os.path.exists(pf_path_old):
+            sources.append((pf_path_old, "main", "prefill"))
+        else:
+            print(f"  ERROR: No prefill found for chunk {ci}")
+            return 1
 
         print(f"  Combining chunk {ci} (infer, prefill)...")
         t0 = time.time()

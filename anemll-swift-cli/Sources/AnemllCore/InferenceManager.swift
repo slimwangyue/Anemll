@@ -861,10 +861,10 @@ private typealias Float16 = Float
         self.fullCausalMask = try MLMultiArray(shape: [1, 1, NSNumber(value: contextLength), NSNumber(value: contextLength)], dataType: .float16)
         initFullCausalMask()
 
-        self.initState()
-
-        // Detect and initialize linear states for Qwen3.5 hybrid models
+        // Detect linear states BEFORE initState so per-chunk states are created
         initLinearStatesIfNeeded()
+
+        self.initState()
 
         try initializeBackings()
 

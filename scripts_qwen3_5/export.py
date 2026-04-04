@@ -59,9 +59,10 @@ def export_lm_head(model, out_dir, skip_existing):
     print(f"  Saved lm_head_logits ({time.time()-t0:.1f}s)")
 
 
-def export_ffn_chunks(model, out_dir, skip_existing):
+def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_prefill=False):
     label = FFN_LABEL
-    for ci in range(NUM_CHUNKS):
+    chunk_indices = [only_chunk] if only_chunk is not None else list(range(NUM_CHUNKS))
+    for ci in chunk_indices:
         # Decode chunk
         dec_path = os.path.join(out_dir, f"ffn_{label}_chunk{ci}.mlpackage")
         if skip_existing and os.path.exists(dec_path):
@@ -76,19 +77,29 @@ def export_ffn_chunks(model, out_dir, skip_existing):
             del ml, conv; gc.collect()
             print(f"  Saved decode chunk {ci} ({time.time()-t0:.1f}s)")
 
-        # Single prefill chunk (dynamic position via RangeDim)
-        pf_path = os.path.join(out_dir, f"prefill_{label}_chunk{ci}.mlpackage")
-        if skip_existing and os.path.exists(pf_path):
-            print(f"  [skip] prefill chunk {ci}")
+        # Prefill chunk
+        if static_prefill:
+            pf_path = os.path.join(out_dir, f"prefill_{label}_chunk{ci}_bs{BATCH_SIZE}.mlpackage")
+            pf_desc = f"prefill chunk {ci} static bs{BATCH_SIZE}"
         else:
-            print(f"  Exporting prefill chunk {ci} ({label} gs={FFN_PER_CHANNEL})...")
+            pf_path = os.path.join(out_dir, f"prefill_{label}_chunk{ci}.mlpackage")
+            pf_desc = f"prefill chunk {ci}"
+        if skip_existing and os.path.exists(pf_path):
+            print(f"  [skip] {pf_desc}")
+        else:
+            print(f"  Exporting {pf_desc} ({label} gs={FFN_PER_CHANNEL})...")
             t0 = time.time()
             conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
                                    num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=FFN_PER_CHANNEL)
-            ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS)
+            if static_prefill:
+                ml = conv.convert_part_2_prefill_exact(
+                    model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
+                    exact_seq_len=BATCH_SIZE)
+            else:
+                ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS)
             ml.save(pf_path)
             del ml, conv; gc.collect()
-            print(f"  Saved prefill chunk {ci} ({time.time()-t0:.1f}s)")
+            print(f"  Saved {pf_desc} ({time.time()-t0:.1f}s)")
 
 
 def main():
@@ -99,13 +110,20 @@ def main():
                         help="Output directory for exported .mlpackage files")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip export if .mlpackage already exists")
+    parser.add_argument("--only-chunk", type=int, default=None,
+                        help="Export only the specified chunk index")
+    parser.add_argument("--static-prefill", action="store_true",
+                        help="Use static-shape prefill (convert_part_2_prefill_exact) with valid_len")
     args = parser.parse_args()
     os.makedirs(args.output, exist_ok=True)
 
+    prefill_mode = "static" if args.static_prefill else "dynamic"
     print("=" * 70)
     print("  Qwen3.5-4B ANE Export — Milestone 2.1 (LUT6 gs=4 FFN)")
     print(f"  Embed: LUT{LUT_BITS} gs={PER_CHANNEL} | LM Head: LUT{LM_HEAD_LUT} gs={PER_CHANNEL} | FFN: {FFN_LABEL} gs={FFN_PER_CHANNEL} × {NUM_CHUNKS} chunks")
-    print(f"  Batch: {BATCH_SIZE} | CTX: {CTX}")
+    print(f"  Batch: {BATCH_SIZE} | CTX: {CTX} | Prefill: {prefill_mode}")
+    if args.only_chunk is not None:
+        print(f"  Only chunk: {args.only_chunk}")
     print(f"  Model: {args.model}")
     print(f"  Output: {args.output}")
     print("=" * 70)
@@ -124,11 +142,12 @@ def main():
 
     t_total = time.time()
     print("\n[1/3] FFN Chunks (decode + prefill)")
-    export_ffn_chunks(model, args.output, args.skip_existing)
-    # print("\n[2/3] Embeddings")
-    # export_embeddings(model, args.output, args.skip_existing)
-    # print("\n[3/3] LM Head")
-    # export_lm_head(model, args.output, args.skip_existing)
+    export_ffn_chunks(model, args.output, args.skip_existing,
+                      only_chunk=args.only_chunk, static_prefill=args.static_prefill)
+    print("\n[2/3] Embeddings")
+    export_embeddings(model, args.output, args.skip_existing)
+    print("\n[3/3] LM Head")
+    export_lm_head(model, args.output, args.skip_existing)
     
     del model; gc.collect()
 

@@ -28,6 +28,39 @@ from ..models.qwen3_5_model import (
     ane_conv_state_shape,
 )
 
+# ---- Monkey-patch coremltools handle_unused_inputs to skip State inputs ----
+# The nn_backend pass tries to add identity ops for unused inputs, but
+# identity doesn't support State types.  State inputs that appear unused
+# (e.g., k_cache in chunks with only linear attention) are still needed
+# by the CoreML runtime and must not be wrapped.
+def _patch_handle_unused_inputs():
+    try:
+        from coremltools.converters.mil.backend.nn.passes import handle_unused_inputs as _hui_mod
+        from coremltools.converters.mil.mil import Builder as mb
+        from coremltools.converters.mil.mil import Block
+
+        _orig_func = _hui_mod._handle_unused_inputs_func
+
+        def _patched_func(f):
+            unused_inputs = [
+                v for v_name, v in f.inputs.items()
+                if len(v.child_ops) == 0
+            ]
+            with f:
+                for v in unused_inputs:
+                    # Skip State-type inputs (identity op doesn't support them)
+                    type_str = str(getattr(v, 'sym_type', getattr(v, 'type', '')))
+                    if 'state' in type_str.lower():
+                        continue
+                    v_tmp = mb.identity(x=v, name=v.name + "_tmp")
+                    Block._copy_scope_info(v, v_tmp)
+
+        _hui_mod._handle_unused_inputs_func = _patched_func
+    except Exception:
+        pass  # If patch fails, fall through to original behavior
+
+_patch_handle_unused_inputs()
+
 if SklearnConvergenceWarning is not None:
     warnings.filterwarnings("ignore", category=SklearnConvergenceWarning)
 warnings.filterwarnings("ignore", message="Number of distinct clusters .* smaller than n_clusters")
@@ -762,11 +795,13 @@ class Qwen35Converter(BaseConverter):
         block_start: int = 0,
         exact_seq_len: int | None = None,
     ) -> ct.models.MLModel:
-        """Convert a static-shape prefill chunk with no valid_len input.
+        """Convert a static-shape prefill chunk with valid_len input.
 
-        This exporter is intended for exact bucket experiments where the
-        prefill sequence length is fixed at trace time and every token position
-        in the bucket is considered valid.
+        The exported model accepts a `valid_len` scalar indicating how many
+        of the `seq_len` positions carry real tokens.  Linear-attention
+        layers zero key/value/beta/g at padding positions so recurrent
+        state is not corrupted.  The final chunk uses a one-hot gather
+        at position `valid_len - 1` instead of the hard-coded last position.
         """
         require_coreml()
         total_layers = model.config.num_hidden_layers
@@ -780,6 +815,11 @@ class Qwen35Converter(BaseConverter):
         local_num_layers = (end_layer - start_layer) if end_layer is not None else total_layers
         export_seq_len = int(exact_seq_len if exact_seq_len is not None else self.batch_size)
 
+        is_final_chunk = (
+            end_layer is None
+            or end_layer >= len(model.model.layers)
+        )
+
         class ExactPrefillWrapper(torch.nn.Module):
             def __init__(
                 self,
@@ -787,12 +827,14 @@ class Qwen35Converter(BaseConverter):
                 start_layer: int,
                 end_layer: int | None,
                 export_seq_len: int,
+                is_final_chunk: bool,
             ) -> None:
                 super().__init__()
                 self.model = model
                 self.start_layer = start_layer
                 self.end_layer = end_layer
                 self.export_seq_len = export_seq_len
+                self.is_final_chunk = is_final_chunk
                 self.local_num_layers = (
                     (end_layer - start_layer)
                     if end_layer is not None
@@ -865,6 +907,7 @@ class Qwen35Converter(BaseConverter):
                 current_pos,
                 linear_conv_state,
                 linear_recurrent_state,
+                valid_len,
             ):
                 out = self.model.model.process_layers_prefill_export_local_state(
                     hidden_states=hidden_states,
@@ -881,11 +924,25 @@ class Qwen35Converter(BaseConverter):
                     apply_final_norm=False,
                     expected_batch_size=1,
                     expected_seq_len=self.export_seq_len,
-                    valid_len=None,
+                    valid_len=valid_len,
                 )
-                return out[:, -1:, :], linear_conv_state, linear_recurrent_state
+                if self.is_final_chunk:
+                    # One-hot gather at valid_len - 1 (ANE-safe, no gather_along_axis)
+                    idx = (valid_len.to(torch.int64) - 1).reshape([])
+                    one_hot = torch.nn.functional.one_hot(
+                        idx, num_classes=self.export_seq_len,
+                    ).to(out.dtype)  # (seq_len,)
+                    selected = (one_hot.reshape(1, 1, self.export_seq_len) @ out)  # (1, 1, H)
+                    return selected, linear_conv_state, linear_recurrent_state
+                return out, linear_conv_state, linear_recurrent_state
 
-        wrapper = ExactPrefillWrapper(model, start_layer, end_layer, export_seq_len).eval()
+        wrapper = ExactPrefillWrapper(
+            model,
+            start_layer,
+            end_layer,
+            export_seq_len,
+            is_final_chunk,
+        ).eval()
         cfg = model.config
         hidden_states = torch.zeros(
             (1, export_seq_len, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
@@ -895,6 +952,7 @@ class Qwen35Converter(BaseConverter):
             (1, 1, export_seq_len, self.context_length), dtype=torch.float16, device=TEST_DEVICE
         )
         current_pos = torch.full((1,), int(block_start), dtype=torch.int32, device=TEST_DEVICE)
+        valid_len = torch.tensor([export_seq_len], dtype=torch.int32, device=TEST_DEVICE)
 
         if wrapper._has_linear:
             lin_conv = torch.zeros(wrapper._lin_conv_shape, dtype=MODEL_DTYPE, device=TEST_DEVICE)
@@ -906,7 +964,7 @@ class Qwen35Converter(BaseConverter):
         self._reset_state_buffers(wrapper)
         traced = torch.jit.trace(
             wrapper,
-            (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec),
+            (hidden_states, position_ids, causal_mask, current_pos, lin_conv, lin_rec, valid_len),
             check_trace=False,
         )
         self._reset_state_buffers(wrapper)
@@ -921,6 +979,7 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="current_pos", shape=current_pos.shape, dtype=np.int32),
                 ct.TensorType(name="linear_conv_state", shape=lin_conv.shape, dtype=np.float16),
                 ct.TensorType(name="linear_recurrent_state", shape=lin_rec.shape, dtype=np.float16),
+                ct.TensorType(name="valid_len", shape=valid_len.shape, dtype=np.int32),
             ],
             outputs=[
                 ct.TensorType(name="output_hidden_states", dtype=np.float16),
