@@ -710,9 +710,16 @@ class Qwen35LinearLayoutStage(nn.Module):
         a = self.from_channels_first_4d(a_cf)
         beta = b.sigmoid()
         if force_fp16_math:
-            g = -self.A_log.to(MODEL_DTYPE).exp() * F.softplus(a.to(MODEL_DTYPE) + self.dt_bias)
+            x = a.to(MODEL_DTYPE) + self.dt_bias
+            # Stable softplus: relu(x) + log(1 + exp(-|x|))
+            # Avoids CoreML ANE bug where F.softplus (or log(1+exp(x))) produces
+            # zeros for certain heads when a depthwise conv is in the same graph.
+            sp = F.relu(x) + torch.log(1.0 + torch.exp(-torch.abs(x)))
+            g = -self.A_log.to(MODEL_DTYPE).exp() * sp
         else:
-            g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+            x = a.float() + self.dt_bias
+            sp = F.relu(x) + torch.log(1.0 + torch.exp(-torch.abs(x)))
+            g = -self.A_log.float().exp() * sp
         if self.num_v_heads // self.num_k_heads > 1:
             rep = self.num_v_heads // self.num_k_heads
             query = query.repeat_interleave(rep, dim=2)

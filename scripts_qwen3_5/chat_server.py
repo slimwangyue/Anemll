@@ -344,15 +344,12 @@ MIN_GEN_RESERVE = 100   # minimum tokens reserved for generation after prefill
 SYSTEM_PROMPT = None    # no system prompt by default (better quality for quantized models)
 
 # Batch prefill uses _chunk_gated_delta_rule (parallelised) while sequential
-# infer uses _recurrent_gated_delta_rule (token-by-token).  On ANE with LUT6
-# quantization, the chunked algorithm accumulates float16 precision errors
-# (~3% per linear layer) that compound across 6 chunks / ~36 layers, plus
-# padding chunks multiply recurrent state by exp(0) ≈ 1±ε per chunk.  With
-# 16 tokens padded to 512 (31 padding chunks), conv_state diverges by
-# max_abs=21.6, rec_state by 3.18 → decode tokens completely wrong.
-# Disable batched prefill until re-export with flexible shapes or float32
-# recurrence is implemented.
-PREFILL_CROSSOVER = 999999  # sequential only — batched prefill too inaccurate on ANE
+# infer uses _recurrent_gated_delta_rule (token-by-token).  On ANE fp16 the
+# different accumulation order produces a per-layer error (~0.006 rec_state)
+# that cascades through 32 layers to produce significant hidden/logit
+# divergence (max_diff ≈ 8.3 at output).  Disable batch prefill until the
+# model export is fixed to use force_recurrent=True in the prefill path.
+PREFILL_CROSSOVER = 999999  # effectively disable batch prefill
 
 
 # ── Repetition Detection ─────────────────────────────────────────────
