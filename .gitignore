@@ -64,3 +64,7 @@ ANEOpTest/
 ANETestLoader/
 qwen3_5_stable_models_4chunk/
 qwen3_5_stable_models_6chunk/
+qwen3_5_stable_lut4ffn_lut6em_test/
+qwen3_5_stable_lut4ffn_lut6em/
+qwen3_5_flll_9chunk_lut4/
+qwen3_5_flll_9chunk/

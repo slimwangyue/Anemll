@@ -153,14 +153,19 @@ def _preflight_check_io_signature(anchor_prog, target_prog,
     a_names = set(a_inputs.keys())
     t_names = set(t_inputs.keys())
 
-    if a_names != t_names:
-        diff = a_names.symmetric_difference(t_names)
+    # Allow target to have extra inputs (e.g., prefill's valid_len absent in infer).
+    # Anchor's inputs must be a subset of target's inputs for weight dedup to work.
+    anchor_only = a_names - t_names
+    if anchor_only:
         raise PreflightError(
-            f"I/O signature mismatch: input names differ. "
-            f"Anchor-only: {a_names - t_names}, Target-only: {t_names - a_names}"
+            f"I/O signature mismatch: anchor has inputs missing from target. "
+            f"Anchor-only: {anchor_only}"
         )
+    extra_in_target = t_names - a_names
+    if extra_in_target:
+        print(f"[dedup]   Note: target has extra inputs (OK for dedup): {extra_in_target}")
 
-    # Check shapes (allow sequence length dimension to differ for infer vs prefill)
+    # Check shapes for shared inputs (allow sequence length dimension to differ)
     for name in a_names:
         a_shape = a_inputs[name]
         t_shape = t_inputs[name]
@@ -557,6 +562,155 @@ def find_replaceable_weights(
         replaced_count += 1
         total_bytes_saved += pair_bytes
 
+    # -------------------------------------------------------------------
+    # Shape-based fallback for cross-model dedup (e.g., embed + lm_head)
+    # -------------------------------------------------------------------
+    # When name-based matching finds 0 pairs, try matching unmatched
+    # palettized weights by squeezed index shape.  This handles cases
+    # where the same underlying weight data is stored under different op
+    # names (e.g., tied word embeddings exported as nn.Embedding vs
+    # nn.Conv2d).  Only matches when there is exactly one candidate on
+    # each side for a given squeezed shape, ensuring no ambiguity.
+    if replaced_count == 0:
+        from collections import defaultdict
+
+        # Collect anchor bases that have both idx + lut
+        anchor_full = set()
+        for base in anchor_bases:
+            if (f"{base}_palettized_indices" in anchor_weights
+                    and f"{base}_palettized_lut" in anchor_weights):
+                anchor_full.add(base)
+
+        # Collect target bases that have both idx + lut
+        target_bases_all = set()
+        for nk in target_weights:
+            tb = _base_name(nk)
+            if tb is not None:
+                target_bases_all.add(tb)
+        target_full = set()
+        for base in target_bases_all:
+            if (f"{base}_palettized_indices" in target_weights
+                    and f"{base}_palettized_lut" in target_weights):
+                target_full.add(base)
+
+        # Group by squeezed index shape
+        anchor_by_shape: Dict[tuple, list] = defaultdict(list)
+        for base in anchor_full:
+            sq = tuple(anchor_weights[f"{base}_palettized_indices"].squeeze().shape)
+            anchor_by_shape[sq].append(base)
+
+        target_by_shape: Dict[tuple, list] = defaultdict(list)
+        for base in target_full:
+            sq = tuple(target_weights[f"{base}_palettized_indices"].squeeze().shape)
+            target_by_shape[sq].append(base)
+
+        # Match where both sides have exactly one candidate + matching LUT shape
+        shape_mapped: List[Tuple[str, str]] = []
+        for sq_shape in anchor_by_shape:
+            if sq_shape not in target_by_shape:
+                continue
+            a_list = anchor_by_shape[sq_shape]
+            t_list = target_by_shape[sq_shape]
+            if len(a_list) == 1 and len(t_list) == 1:
+                a_base, t_base = a_list[0], t_list[0]
+                a_lut_sq = tuple(anchor_weights[f"{a_base}_palettized_lut"].squeeze().shape)
+                t_lut_sq = tuple(target_weights[f"{t_base}_palettized_lut"].squeeze().shape)
+                if a_lut_sq == t_lut_sq:
+                    shape_mapped.append((a_base, t_base))
+
+        if shape_mapped and verbose:
+            print(f"  Shape-based fallback: matched {len(shape_mapped)} cross-name pair(s)")
+
+        for a_base, t_base in shape_mapped:
+            a_idx_key = f"{a_base}_palettized_indices"
+            a_lut_key = f"{a_base}_palettized_lut"
+            t_idx_key = f"{t_base}_palettized_indices"
+            t_lut_key = f"{t_base}_palettized_lut"
+
+            a_idx = anchor_weights[a_idx_key]
+            a_lut = anchor_weights[a_lut_key]
+            t_idx = target_weights[t_idx_key]
+            t_lut = target_weights[t_lut_key]
+
+            pair_bytes = t_idx.nbytes + t_lut.nbytes
+            display_name = f"{t_base} <- {a_base}"
+
+            if verify_dequant:
+                a_deq = _dequantize_lut(a_idx, a_lut)
+                t_deq = _dequantize_lut(t_idx, t_lut)
+
+                if a_deq is None or t_deq is None:
+                    if verbose:
+                        print(f"    SKIP (deq failed): {display_name}")
+                    skipped_count += 1
+                    if diagnostics is not None:
+                        diagnostics.append(ReplacementDiag(
+                            base_name=display_name,
+                            reason=ReplacementReason.REJECTED_DEQ_FAIL,
+                            tensor_class="palettized_cross",
+                        ))
+                    continue
+
+                cos = _cosine_similarity(a_deq, t_deq)
+                diff = np.abs(a_deq.astype(np.float64) - t_deq.astype(np.float64))
+                max_abs = float(np.max(diff))
+                mean_abs = float(np.mean(diff))
+
+                if max_abs_threshold is None:
+                    accepted = cos >= cos_threshold and mean_abs <= mean_abs_threshold
+                else:
+                    accepted = (cos >= cos_threshold
+                                and max_abs <= max_abs_threshold
+                                and mean_abs <= mean_abs_threshold)
+
+                if not accepted:
+                    if verbose:
+                        reject_parts = []
+                        if cos < cos_threshold:
+                            reject_parts.append(f"cos={cos:.6f}<{cos_threshold}")
+                        if max_abs_threshold is not None and max_abs > max_abs_threshold:
+                            reject_parts.append(f"max_abs={max_abs:.2e}>{max_abs_threshold}")
+                        if mean_abs > mean_abs_threshold:
+                            reject_parts.append(f"mean_abs={mean_abs:.2e}>{mean_abs_threshold}")
+                        print(f"    SKIP ({', '.join(reject_parts)}): {display_name}")
+                    skipped_count += 1
+                    if diagnostics is not None:
+                        diagnostics.append(ReplacementDiag(
+                            base_name=display_name,
+                            reason=ReplacementReason.REJECTED_THRESHOLD,
+                            tensor_class="palettized_cross",
+                            cos_sim=cos, max_abs_diff=max_abs, mean_abs_diff=mean_abs,
+                        ))
+                    continue
+
+                if verbose:
+                    print(f"    REPLACE (cos={cos:.6f}, max_abs={max_abs:.2e}, "
+                          f"mean_abs={mean_abs:.2e}, ~{pair_bytes/1024:.0f}KB): {display_name}")
+                if diagnostics is not None:
+                    diagnostics.append(ReplacementDiag(
+                        base_name=display_name,
+                        reason=ReplacementReason.DEQ_CLOSE,
+                        tensor_class="palettized_cross",
+                        bytes_saved=pair_bytes,
+                        cos_sim=cos, max_abs_diff=max_abs, mean_abs_diff=mean_abs,
+                    ))
+            else:
+                if verbose:
+                    print(f"    REPLACE (no verify, ~{pair_bytes/1024:.0f}KB): {display_name}")
+                if diagnostics is not None:
+                    diagnostics.append(ReplacementDiag(
+                        base_name=display_name,
+                        reason=ReplacementReason.REPLACED_NO_VERIFY,
+                        tensor_class="palettized_cross",
+                        bytes_saved=pair_bytes,
+                    ))
+
+            # Map target keys -> anchor keys (cross-name)
+            replacements[t_idx_key] = a_idx_key
+            replacements[t_lut_key] = a_lut_key
+            replaced_count += 1
+            total_bytes_saved += pair_bytes
+
     if verbose or replaced_count > 0:
         print(f"  Dedup summary: {replaced_count} weight pairs to replace "
               f"(~{total_bytes_saved / 1e6:.1f} MB), "
@@ -618,11 +772,15 @@ def _apply_replacements_to_mlpackage(
             continue
         if not isinstance(current_arr, np.ndarray):
             continue
-        if current_arr.shape != anchor_arr.shape:
+        # Use size (element count) instead of exact shape to allow
+        # cross-model dedup where shapes differ only in trailing 1-dims
+        # (e.g., (248320, 2560) vs (248320, 2560, 1)).  The reshape()
+        # call below handles the actual shape adaptation.
+        if current_arr.size != anchor_arr.size:
             continue
 
         # Already identical — skip
-        if np.array_equal(current_arr, anchor_arr):
+        if np.array_equal(current_arr, anchor_arr.reshape(current_arr.shape)):
             continue
 
         # Replace the value in-place via _sym_val.val (the writable path)
@@ -670,6 +828,173 @@ def _apply_replacements_to_mlpackage(
             print(f"    No replacements needed, copied as-is -> {output_path}")
 
     return replaced
+
+
+# ---------------------------------------------------------------------------
+# Post-combine blob-level dedup for cross-architecture weight sharing
+# ---------------------------------------------------------------------------
+
+def dedup_cross_model_blobs(
+    mlpackage_path: str,
+    anchor_fn: str,
+    target_fn: str,
+    verbose: bool = False,
+) -> int:
+    """Deduplicate weight blobs across functions in a multifunction mlpackage.
+
+    After save_multifunction produces a combined model, this function finds
+    constexpr_lut_to_dense ops across functions whose weight data is
+    byte-identical (ignoring the 64-byte blob header) and redirects the
+    target's blob references to point to the anchor's blobs.  This achieves
+    true weight sharing even when the blob headers differ (e.g., different
+    shapes like (V, H) vs (V, H, 1) for tied embed/lm_head weights).
+
+    Modifies the mlpackage IN PLACE.
+
+    Returns:
+        Number of bytes saved.
+    """
+    import coremltools as ct
+
+    model = ct.models.MLModel(mlpackage_path, compute_units=ct.ComputeUnit.CPU_ONLY)
+    spec = model.get_spec()
+    prog = spec.mlProgram
+
+    weight_file = os.path.join(mlpackage_path, "Data", "com.apple.CoreML",
+                               "weights", "weight.bin")
+    if not os.path.exists(weight_file):
+        if verbose:
+            print("[dedup-blobs] No weight.bin found")
+        return 0
+
+    BLOB_HEADER_SIZE = 64
+
+    # Collect blob references for constexpr_lut_to_dense ops in each function
+    def _get_blob_refs(fn_name):
+        fn = prog.functions.get(fn_name)
+        if fn is None:
+            return {}
+        refs = {}
+        for blk_key in fn.block_specializations:
+            blk = fn.block_specializations[blk_key]
+            for op in blk.operations:
+                if op.type == "constexpr_lut_to_dense":
+                    for inp_name in ("indices", "lut"):
+                        if inp_name in op.inputs:
+                            for arg in op.inputs[inp_name].arguments:
+                                val = arg.value
+                                if val.HasField("blobFileValue"):
+                                    refs[inp_name] = val.blobFileValue
+        return refs
+
+    anchor_refs = _get_blob_refs(anchor_fn)
+    target_refs = _get_blob_refs(target_fn)
+
+    if not anchor_refs or not target_refs:
+        if verbose:
+            print("[dedup-blobs] Could not find constexpr_lut_to_dense blob refs")
+        return 0
+
+    bytes_saved = 0
+    redirected = 0
+
+    with open(weight_file, "rb") as f:
+        file_size = os.path.getsize(weight_file)
+
+        for inp_name in ("indices", "lut"):
+            if inp_name not in anchor_refs or inp_name not in target_refs:
+                continue
+
+            a_ref = anchor_refs[inp_name]
+            t_ref = target_refs[inp_name]
+
+            if a_ref.offset == t_ref.offset:
+                if verbose:
+                    print(f"  {inp_name}: already shared (offset={a_ref.offset})")
+                continue
+
+            # Read headers to get data sizes
+            f.seek(a_ref.offset)
+            a_hdr = f.read(BLOB_HEADER_SIZE)
+            f.seek(t_ref.offset)
+            t_hdr = f.read(BLOB_HEADER_SIZE)
+
+            a_data_size = int.from_bytes(a_hdr[8:16], "little")
+            t_data_size = int.from_bytes(t_hdr[8:16], "little")
+
+            if a_data_size != t_data_size:
+                if verbose:
+                    print(f"  {inp_name}: data sizes differ "
+                          f"(anchor={a_data_size}, target={t_data_size}), skipping")
+                continue
+
+            # Verify data is byte-identical (compare in chunks)
+            a_data_start = a_ref.offset + BLOB_HEADER_SIZE
+            t_data_start = t_ref.offset + BLOB_HEADER_SIZE
+            CHUNK = 4 * 1024 * 1024
+            identical = True
+            remaining = a_data_size
+
+            a_pos, t_pos = a_data_start, t_data_start
+            while remaining > 0:
+                n = min(CHUNK, remaining)
+                f.seek(a_pos)
+                a_chunk = f.read(n)
+                f.seek(t_pos)
+                t_chunk = f.read(n)
+                if a_chunk != t_chunk:
+                    identical = False
+                    break
+                a_pos += n
+                t_pos += n
+                remaining -= n
+
+            if not identical:
+                if verbose:
+                    print(f"  {inp_name}: data differs, skipping")
+                continue
+
+            # Redirect target's blob offset to anchor's
+            old_offset = t_ref.offset
+            t_ref.offset = a_ref.offset
+            blob_total = BLOB_HEADER_SIZE + a_data_size
+            bytes_saved += blob_total
+            redirected += 1
+
+            if verbose:
+                print(f"  {inp_name}: redirected offset {old_offset} -> {a_ref.offset} "
+                      f"(~{blob_total / 1e6:.1f} MB)")
+
+    if redirected > 0:
+        # Save modified protobuf spec
+        spec_path = os.path.join(mlpackage_path, "Data", "com.apple.CoreML",
+                                 "model.mlmodel")
+        with open(spec_path, "wb") as wf:
+            wf.write(spec.SerializeToString())
+
+        # Truncate weight.bin to remove unreferenced tail data
+        all_refs = list(anchor_refs.values()) + list(target_refs.values())
+        max_end = 0
+        with open(weight_file, "rb") as rf:
+            for ref in all_refs:
+                rf.seek(ref.offset)
+                hdr = rf.read(BLOB_HEADER_SIZE)
+                dsz = int.from_bytes(hdr[8:16], "little")
+                end = ref.offset + BLOB_HEADER_SIZE + dsz
+                if end > max_end:
+                    max_end = end
+
+        if max_end < file_size:
+            with open(weight_file, "r+b") as wf:
+                wf.truncate(max_end)
+            if verbose:
+                print(f"  Truncated weight.bin: {file_size / 1e6:.1f} -> {max_end / 1e6:.1f} MB")
+
+        if verbose:
+            print(f"[dedup-blobs] Redirected {redirected} blob(s), "
+                  f"saved ~{bytes_saved / 1e6:.1f} MB")
+
+    return bytes_saved
 
 
 # ---------------------------------------------------------------------------

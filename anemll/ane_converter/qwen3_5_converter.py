@@ -84,6 +84,7 @@ class Qwen35Converter(BaseConverter):
         lut_embeddings_per_channel=8,
         lut_lmhead_bits=None,
         lut_lmhead_per_channel=8,
+        compute_precision: str = "float16",
     ) -> None:
         super().__init__(model)
         self.context_length = context_length
@@ -97,6 +98,10 @@ class Qwen35Converter(BaseConverter):
         self.lut_lmhead_bits = lut_lmhead_bits
         self.lut_lmhead_per_channel = lut_lmhead_per_channel
         self.converted_model = None
+        self.compute_precision = (
+            ct.precision.FLOAT32 if compute_precision == "float32"
+            else ct.precision.FLOAT16
+        )
 
     @staticmethod
     def _effective_lut_bits_for_part(part: str, lut_bits: int | None) -> int | None:
@@ -420,7 +425,7 @@ class Qwen35Converter(BaseConverter):
             ],
             outputs=[ct.TensorType(name="logits", dtype=np.float16)],
             states=self.GetTransformerStates(model, prefix="model.model."),
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -450,7 +455,7 @@ class Qwen35Converter(BaseConverter):
             traced,
             inputs=[ct.TensorType(name="input_ids", shape=input_shape, dtype=np.int32)],
             outputs=[ct.TensorType(name="hidden_states", dtype=np.float16)],
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -462,11 +467,15 @@ class Qwen35Converter(BaseConverter):
         return mlmodel
 
     def convert_part_2(
-        self, model: Qwen35ForCausalLM, chunk_idx: int = 0, total_chunks: int = 1
+        self, model: Qwen35ForCausalLM, chunk_idx: int = 0, total_chunks: int = 1,
+        override_start_layer: int | None = None, override_end_layer: int | None = None,
     ) -> ct.models.MLModel:
         require_coreml()
         total_layers = model.config.num_hidden_layers
-        if total_chunks > 1:
+        if override_start_layer is not None:
+            start_layer = override_start_layer
+            end_layer = override_end_layer  # None means "to the end"
+        elif total_chunks > 1:
             base, rem = divmod(total_layers, total_chunks)
             start_layer = chunk_idx * base + min(chunk_idx, rem)
             end_layer = start_layer + base + (1 if chunk_idx < rem else 0)
@@ -592,7 +601,7 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
             ],
             states=wrapper.states,
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -606,11 +615,15 @@ class Qwen35Converter(BaseConverter):
 
     def convert_part_2_prefill(
         self, model: Qwen35ForCausalLM, chunk_idx: int = 0, total_chunks: int = 1,
-        block_start: int = 0,
+        block_start: int = 0, mask_padding_hidden_states: bool = False,
+        override_start_layer: int | None = None, override_end_layer: int | None = None,
     ) -> ct.models.MLModel:
         require_coreml()
         total_layers = model.config.num_hidden_layers
-        if total_chunks > 1:
+        if override_start_layer is not None:
+            start_layer = override_start_layer
+            end_layer = override_end_layer
+        elif total_chunks > 1:
             base, rem = divmod(total_layers, total_chunks)
             start_layer = chunk_idx * base + min(chunk_idx, rem)
             end_layer = start_layer + base + (1 if chunk_idx < rem else 0)
@@ -626,12 +639,14 @@ class Qwen35Converter(BaseConverter):
                 start_layer: int,
                 end_layer: int | None,
                 export_seq_len: int,
+                mask_padding_hidden_states: bool = False,
             ) -> None:
                 super().__init__()
                 self.model = model
                 self.start_layer = start_layer
                 self.end_layer = end_layer
                 self.export_seq_len = export_seq_len
+                self._mask_padding_hidden_states = mask_padding_hidden_states
                 self.local_num_layers = (end_layer - start_layer) if end_layer is not None else len(model.model.layers)
                 self._is_last_chunk = (
                     (end_layer is None) or end_layer == len(model.model.layers)
@@ -709,6 +724,7 @@ class Qwen35Converter(BaseConverter):
                     expected_batch_size=1,
                     expected_seq_len=self.export_seq_len,
                     valid_len=valid_len,
+                    mask_padding_hidden_states=self._mask_padding_hidden_states,
                 )
                 if self._is_last_chunk:
                     # Apply final RMSNorm (matches FFN/infer wrapper behavior).
@@ -728,7 +744,8 @@ class Qwen35Converter(BaseConverter):
                     return out, linear_conv_state, linear_recurrent_state
                 return out, linear_conv_state, linear_recurrent_state
 
-        wrapper = PrefillWrapper(model, start_layer, end_layer, self.batch_size).eval()
+        wrapper = PrefillWrapper(model, start_layer, end_layer, self.batch_size,
+                                 mask_padding_hidden_states=mask_padding_hidden_states).eval()
         cfg = model.config
         hidden_states = torch.zeros(
             (1, self.batch_size, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
@@ -775,7 +792,7 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
             ],
             states=wrapper.states,
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -794,6 +811,9 @@ class Qwen35Converter(BaseConverter):
         total_chunks: int = 1,
         block_start: int = 0,
         exact_seq_len: int | None = None,
+        mask_padding_hidden_states: bool = True,
+        override_start_layer: int | None = None,
+        override_end_layer: int | None = None,
     ) -> ct.models.MLModel:
         """Convert a static-shape prefill chunk with valid_len input.
 
@@ -805,7 +825,10 @@ class Qwen35Converter(BaseConverter):
         """
         require_coreml()
         total_layers = model.config.num_hidden_layers
-        if total_chunks > 1:
+        if override_start_layer is not None:
+            start_layer = override_start_layer
+            end_layer = override_end_layer
+        elif total_chunks > 1:
             base, rem = divmod(total_layers, total_chunks)
             start_layer = chunk_idx * base + min(chunk_idx, rem)
             end_layer = start_layer + base + (1 if chunk_idx < rem else 0)
@@ -828,6 +851,7 @@ class Qwen35Converter(BaseConverter):
                 end_layer: int | None,
                 export_seq_len: int,
                 is_final_chunk: bool,
+                mask_padding_hidden_states: bool = False,
             ) -> None:
                 super().__init__()
                 self.model = model
@@ -835,6 +859,7 @@ class Qwen35Converter(BaseConverter):
                 self.end_layer = end_layer
                 self.export_seq_len = export_seq_len
                 self.is_final_chunk = is_final_chunk
+                self._mask_padding_hidden_states = mask_padding_hidden_states
                 self.local_num_layers = (
                     (end_layer - start_layer)
                     if end_layer is not None
@@ -925,6 +950,7 @@ class Qwen35Converter(BaseConverter):
                     expected_batch_size=1,
                     expected_seq_len=self.export_seq_len,
                     valid_len=valid_len,
+                    mask_padding_hidden_states=self._mask_padding_hidden_states,
                 )
                 if self.is_final_chunk:
                     # One-hot gather at valid_len - 1 (ANE-safe, no gather_along_axis)
@@ -942,6 +968,7 @@ class Qwen35Converter(BaseConverter):
             end_layer,
             export_seq_len,
             is_final_chunk,
+            mask_padding_hidden_states=mask_padding_hidden_states,
         ).eval()
         cfg = model.config
         hidden_states = torch.zeros(
@@ -987,7 +1014,7 @@ class Qwen35Converter(BaseConverter):
                 ct.TensorType(name="linear_recurrent_state_out", dtype=np.float16),
             ],
             states=wrapper.states,
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -1038,7 +1065,7 @@ class Qwen35Converter(BaseConverter):
             traced,
             inputs=[ct.TensorType(name="hidden_states", shape=sample_input.shape, dtype=np.float16)],
             outputs=outputs,
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",
@@ -1127,7 +1154,7 @@ class Qwen35Converter(BaseConverter):
             ],
             outputs=outputs,
             states=self.GetTransformerStates(model, prefix="model.model."),
-            compute_precision=ct.precision.FLOAT16,
+            compute_precision=self.compute_precision,
             compute_units=ct.ComputeUnit.CPU_AND_NE,
             minimum_deployment_target=ct.target.iOS18,
             convert_to="mlprogram",

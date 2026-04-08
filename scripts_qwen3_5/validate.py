@@ -110,14 +110,24 @@ def _argmax_from_lm_out(lm_out):
 
 class SeparateEngine:
     def __init__(self, model_dir, label, compute_unit):
-        print(f"  Loading embeddings (CPU_ONLY)...")
-        self.embed = ct.models.MLModel(
-            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
-        lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
-        if not os.path.exists(lm_head_path):
-            lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
-        print(f"  Loading lm_head (CPU_ONLY)...")
-        self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
+        # Check for combined embed+lmhead multifunction model first
+        combined_el = os.path.join(model_dir, "embed_lmhead_combined.mlpackage")
+        if os.path.exists(combined_el):
+            print(f"  Loading embed from embed_lmhead_combined (CPU_ONLY)...")
+            self.embed = ct.models.MLModel(combined_el, compute_units=ct.ComputeUnit.CPU_ONLY,
+                                           function_name="embed")
+            print(f"  Loading lmhead from embed_lmhead_combined (CPU_ONLY)...")
+            self.lmhead = ct.models.MLModel(combined_el, compute_units=ct.ComputeUnit.CPU_ONLY,
+                                            function_name="lmhead")
+        else:
+            print(f"  Loading embeddings (CPU_ONLY)...")
+            self.embed = ct.models.MLModel(
+                os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
+            lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
+            if not os.path.exists(lm_head_path):
+                lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
+            print(f"  Loading lm_head (CPU_ONLY)...")
+            self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
         self.ffns = []
         for ci in range(NUM_CHUNKS):
             print(f"  Loading ffn chunk {ci} ({compute_unit})...")
@@ -193,6 +203,12 @@ class SeparateEngine:
             if next_id in stop_ids:
                 break
         t_decode = (time.time() - t_dec) * 1000
+        # Feed the last generated token to fill KV cache gap at end_pos-1.
+        # Without this, the incremental mode leaves a hole in the KV cache
+        # that fresh-replay fills, causing divergence in subsequent turns.
+        fill_pos = prefill_end_pos + len(tokens) - 1
+        if tokens and fill_pos < CTX:
+            self._step(tokens[-1], fill_pos)
         end_pos = prefill_end_pos + len(tokens)
         return tokens, end_pos, t_prefill, t_decode
 
@@ -207,14 +223,24 @@ class SeparateEngine:
 
 class DedupEngine:
     def __init__(self, combined_dir, model_dir, compute_unit):
-        print(f"  Loading embeddings (CPU_ONLY)...")
-        self.embed = ct.models.MLModel(
-            os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
-        lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
-        if not os.path.exists(lm_head_path):
-            lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
-        print(f"  Loading lm_head (CPU_ONLY)...")
-        self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
+        # Check for combined embed+lmhead multifunction model first
+        combined_el = os.path.join(model_dir, "embed_lmhead_combined.mlpackage")
+        if os.path.exists(combined_el):
+            print(f"  Loading embed from embed_lmhead_combined (CPU_ONLY)...")
+            self.embed = ct.models.MLModel(combined_el, compute_units=ct.ComputeUnit.CPU_ONLY,
+                                           function_name="embed")
+            print(f"  Loading lmhead from embed_lmhead_combined (CPU_ONLY)...")
+            self.lmhead = ct.models.MLModel(combined_el, compute_units=ct.ComputeUnit.CPU_ONLY,
+                                            function_name="lmhead")
+        else:
+            print(f"  Loading embeddings (CPU_ONLY)...")
+            self.embed = ct.models.MLModel(
+                os.path.join(model_dir, "embeddings.mlpackage"), compute_units=ct.ComputeUnit.CPU_ONLY)
+            lm_head_path = os.path.join(model_dir, "lm_head_logits.mlpackage")
+            if not os.path.exists(lm_head_path):
+                lm_head_path = os.path.join(model_dir, "lm_head.mlpackage")
+            print(f"  Loading lm_head (CPU_ONLY)...")
+            self.lmhead = ct.models.MLModel(lm_head_path, compute_units=ct.ComputeUnit.CPU_ONLY)
         self.ffns = []
         for ci in range(NUM_CHUNKS):
             print(f"  Loading dedup chunk {ci} ({compute_unit})...")
@@ -297,6 +323,9 @@ class DedupEngine:
             if next_id in stop_ids:
                 break
         t_decode = (time.time() - t_dec) * 1000
+        fill_pos = prefill_end_pos + len(tokens) - 1
+        if tokens and fill_pos < CTX:
+            self._step(tokens[-1], fill_pos)
         end_pos = prefill_end_pos + len(tokens)
         return tokens, end_pos, t_prefill, t_decode
 
@@ -309,24 +338,32 @@ class DedupEngine:
 
 # ── Run modes ──
 
-def run_fresh(engine, tokenizer, turns, max_gen, stop_ids, engine_name):
+def run_fresh(engine, tokenizer, tpl_tokens, turns, max_gen, stop_ids, engine_name):
     conversation = []
     results = []
+    accumulated_tokens = []  # exact prompt tokens fed so far (no gen tokens)
     for ti, user_msg in enumerate(turns):
         print(f"\n  {engine_name} Turn {ti+1} [fresh]: {user_msg[:60]}")
         conversation.append({"role": "user", "content": user_msg})
-        input_ids = _ensure_ids(tokenizer.apply_chat_template(
-            conversation, return_tensors="pt", add_generation_prompt=True,
-            enable_thinking=True))
-        prompt_len = input_ids.shape[1]
+        if ti == 0:
+            input_ids = _ensure_ids(tokenizer.apply_chat_template(
+                conversation, return_tensors="pt", add_generation_prompt=True,
+                enable_thinking=True))
+            token_list = input_ids[0].tolist()
+        else:
+            # Build from exact tokens to avoid BPE round-trip divergence
+            has_stop = any(t in stop_ids for t in results[-1]['tokens'][-1:])
+            continuation = _build_continuation(tokenizer, tpl_tokens, user_msg, has_stop)
+            token_list = accumulated_tokens + results[-1]['tokens'] + continuation
+        prompt_len = len(token_list)
         if prompt_len + max_gen > CTX:
-            input_ids = input_ids[:, -(CTX - max_gen):]
-            prompt_len = input_ids.shape[1]
+            token_list = token_list[-(CTX - max_gen):]
+            prompt_len = len(token_list)
         engine.reset_all()
-        token_list = input_ids[0].tolist()
         gen_tokens, end_pos, pf_ms, dc_ms = engine.prefill_and_decode(
             token_list, 0, max_gen, stop_ids)
         raw_text = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+        accumulated_tokens = list(token_list)  # snapshot prompt for next turn
         response_for_template = "<think>\n" + raw_text
         conversation.append({"role": "assistant", "content": response_for_template})
         results.append({
@@ -393,34 +430,47 @@ def main():
                         help="Skip separate model validation (only test dedup)")
     parser.add_argument("--chunks", type=int, default=None,
                         help="Override number of chunks (default: from config.py)")
+    parser.add_argument("--label", type=str, default=None,
+                        help="Override FFN label (e.g. 'LUT4'). Default: from config.py")
     args = parser.parse_args()
     if args.tokenizer is None:
         args.tokenizer = args.model_dir
 
     global NUM_CHUNKS
+    label = args.label if args.label else FFN_LABEL
     if args.chunks is not None:
         NUM_CHUNKS = args.chunks
     else:
-        # Auto-detect chunk count from combined_LUT*_dedup/chunk*.mlpackage
+        # Auto-detect chunk count from combined_*_dedup/chunk*.mlpackage
         import glob as _glob
         for pattern in [
-            os.path.join(args.model_dir, f"combined_{FFN_LABEL}_dedup", "chunk*.mlpackage"),
-            os.path.join(args.model_dir, f"ffn_{FFN_LABEL}_chunk*.mlpackage"),
+            os.path.join(args.model_dir, f"combined_{label}_dedup", "chunk*.mlpackage"),
+            os.path.join(args.model_dir, "combined_*_dedup", "chunk*.mlpackage"),
+            os.path.join(args.model_dir, f"ffn_{label}_chunk*.mlpackage"),
         ]:
             found = _glob.glob(pattern)
             if found:
                 NUM_CHUNKS = len(found)
+                # If we auto-detected from a wildcard, update label from the dir name
+                if "*" in pattern and found:
+                    import re
+                    m = re.search(r'combined_(.+?)_dedup', found[0])
+                    if m:
+                        label = m.group(1)
                 break
-
-    label = FFN_LABEL
     combined_dir = os.path.join(args.model_dir, f"combined_{label}_dedup")
     compute_unit = ct.ComputeUnit.CPU_AND_NE
 
-    # Verify required files — accept either lm_head_logits or lm_head
-    lm_head_name = "lm_head_logits.mlpackage"
-    if not os.path.exists(os.path.join(args.model_dir, lm_head_name)):
-        lm_head_name = "lm_head.mlpackage"
-    required = ["embeddings.mlpackage", lm_head_name]
+    # Verify required files — accept embed_lmhead_combined or separate embed + lm_head
+    has_combined_el = os.path.exists(os.path.join(args.model_dir, "embed_lmhead_combined.mlpackage"))
+    required = []
+    if not has_combined_el:
+        lm_head_name = "lm_head_logits.mlpackage"
+        if not os.path.exists(os.path.join(args.model_dir, lm_head_name)):
+            lm_head_name = "lm_head.mlpackage"
+        required += ["embeddings.mlpackage", lm_head_name]
+    else:
+        required.append("embed_lmhead_combined.mlpackage")
     for ci in range(NUM_CHUNKS):
         if not args.skip_separate:
             required.append(f"ffn_{label}_chunk{ci}.mlpackage")
@@ -430,7 +480,7 @@ def main():
         print("ERROR: Missing files:")
         for m in missing:
             print(f"  {m}")
-        print("\nRun qwen35_export.py and qwen35_combine.py first.")
+        print("\nRun export.py and combine.py first.")
         sys.exit(1)
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=False)
@@ -452,7 +502,7 @@ def main():
         print(f"  Separate {label} — fresh")
         print(f"{'='*60}")
         sep_engine = SeparateEngine(args.model_dir, label, compute_unit)
-        sep_fresh = run_fresh(sep_engine, tokenizer, CONVERSATION_TURNS,
+        sep_fresh = run_fresh(sep_engine, tokenizer, tpl_tokens, CONVERSATION_TURNS,
                               args.tokens, stop_ids, f"Separate {label}")
         all_configs.append((f"Separate {label} fresh", sep_fresh))
 
@@ -470,19 +520,18 @@ def main():
     print(f"  Dedup {label} — fresh")
     print(f"{'='*60}")
     dedup_engine = DedupEngine(combined_dir, args.model_dir, compute_unit)
-    dedup_fresh = run_fresh(dedup_engine, tokenizer, CONVERSATION_TURNS,
+    dedup_fresh = run_fresh(dedup_engine, tokenizer, tpl_tokens, CONVERSATION_TURNS,
                             args.tokens, stop_ids, f"Dedup {label}")
     all_configs.append((f"Dedup {label} fresh", dedup_fresh))
 
     print(f"\n{'='*60}")
     print(f"  Dedup {label} — incremental")
     print(f"{'='*60}")
-    dedup_engine2 = DedupEngine(combined_dir, args.model_dir, compute_unit)
-    dedup_inc = run_incremental(dedup_engine2, tokenizer, tpl_tokens,
+    dedup_engine.reset_all()
+    dedup_inc = run_incremental(dedup_engine, tokenizer, tpl_tokens,
                                 CONVERSATION_TURNS, args.tokens, stop_ids, f"Dedup {label}")
     all_configs.append((f"Dedup {label} incremental", dedup_inc))
     dedup_engine.cleanup()
-    dedup_engine2.cleanup()
 
     # ── Results table ──
     num_turns = len(CONVERSATION_TURNS)

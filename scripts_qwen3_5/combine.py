@@ -8,7 +8,7 @@ Usage:
     python scripts_qwen3_5/combine.py --input /path/to/exported
     python scripts_qwen3_5/combine.py --skip-existing
 """
-import os, time, argparse, sys
+import os, time, argparse, sys, shutil
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
@@ -30,6 +30,64 @@ def dir_size_mb(path):
     return total / (1024 * 1024)
 
 
+def combine_embed_lmhead(input_dir, skip_existing=False):
+    """Combine embeddings + lm_head_nosplit into a 2-function mlpackage with cross-model weight dedup."""
+    import coremltools as ct
+    from anemll.utils.dedup_weights import prepare_dedup_sources, dedup_cross_model_blobs
+
+    embed_path = os.path.join(input_dir, "embeddings.mlpackage")
+    lmhead_path = os.path.join(input_dir, "lm_head_nosplit.mlpackage")
+    combined_path = os.path.join(input_dir, "embed_lmhead_combined.mlpackage")
+
+    if skip_existing and os.path.exists(combined_path):
+        sz = dir_size_mb(combined_path)
+        print(f"  [skip] embed_lmhead_combined ({sz:.1f} MB)")
+        return combined_path
+
+    if not os.path.exists(embed_path):
+        print(f"  ERROR: {embed_path} not found")
+        return None
+    if not os.path.exists(lmhead_path):
+        print(f"  ERROR: {lmhead_path} not found")
+        return None
+
+    print(f"  Combining embed + lm_head into multifunction model with dedup...")
+    t0 = time.time()
+
+    sources = [
+        (embed_path, "main", "embed"),
+        (lmhead_path, "main", "lmhead"),
+    ]
+
+    try:
+        with prepare_dedup_sources(sources, verbose=True, preflight=False) as deduped:
+            desc = ct.utils.MultiFunctionDescriptor()
+            for path, src_fn, tgt_fn in deduped:
+                desc.add_function(path, src_fn, tgt_fn)
+            desc.default_function_name = "embed"
+            ct.utils.save_multifunction(desc, combined_path)
+
+        print("  Running cross-model blob dedup post-processing...")
+        saved = dedup_cross_model_blobs(combined_path, "embed", "lmhead", verbose=True)
+        if saved > 0:
+            print(f"  Cross-model dedup saved {saved / 1e6:.1f} MB")
+        else:
+            print("  Cross-model dedup: no savings (blobs may already be shared or differ)")
+    except Exception as e:
+        print(f"  Dedup failed ({e}), trying without dedup...")
+        if os.path.exists(combined_path):
+            shutil.rmtree(combined_path)
+        desc = ct.utils.MultiFunctionDescriptor()
+        for path, src_fn, tgt_fn in sources:
+            desc.add_function(path, src_fn, tgt_fn)
+        desc.default_function_name = "embed"
+        ct.utils.save_multifunction(desc, combined_path)
+
+    sz = dir_size_mb(combined_path)
+    print(f"  Saved embed_lmhead_combined ({time.time()-t0:.1f}s) — {sz:.1f} MB")
+    return combined_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Combine Qwen3.5-4B chunks (Milestone 2.1)")
     parser.add_argument("--input", default=DEFAULT_OUTPUT,
@@ -37,9 +95,13 @@ def main():
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--only-chunk", type=int, default=None,
                         help="Combine only the specified chunk index")
+    parser.add_argument("--label", type=str, default=None,
+                        help="Override FFN label (e.g. 'LUT4'). Default: from config.py")
+    parser.add_argument("--combine-embed-lmhead", action="store_true",
+                        help="Also combine embeddings + lm_head_nosplit into embed_lmhead_combined.mlpackage")
     args = parser.parse_args()
 
-    label = FFN_LABEL
+    label = args.label if args.label else FFN_LABEL
     combined_dir = os.path.join(args.input, f"combined_{label}_dedup")
     os.makedirs(combined_dir, exist_ok=True)
 
@@ -100,6 +162,14 @@ def main():
         print(f"    Done ({time.time()-t0:.1f}s) — {sz:.1f} MB")
 
     print(f"\n  Total combined: {total_size:.1f} MB")
+
+    # Optionally combine embed + lm_head_nosplit
+    if args.combine_embed_lmhead:
+        print(f"\n  Combining embed + lm_head_nosplit...")
+        result = combine_embed_lmhead(args.input, skip_existing=args.skip_existing)
+        if result is None:
+            return 1
+
     print(f"  Elapsed: {time.time()-t_total:.1f}s")
     print(f"\nNext: python scripts_qwen3_5/compile.py --model-dir {args.input}")
     return 0
