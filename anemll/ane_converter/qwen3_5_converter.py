@@ -436,7 +436,14 @@ class Qwen35Converter(BaseConverter):
             mlmodel = self.converted_model
         return mlmodel
 
-    def convert_part_1(self, model: Qwen35ForCausalLM) -> ct.models.MLModel:
+    def convert_part_1(self, model: Qwen35ForCausalLM, *, seq_len: int | None = None) -> ct.models.MLModel:
+        """Convert embeddings to CoreML.
+
+        Args:
+            seq_len: If given, use a fixed input shape [1, seq_len].
+                     If None, use EnumeratedShapes [[1,1], [1,batch_size]]
+                     (legacy; produces unknown MIL dims that E5ML warns about).
+        """
         require_coreml()
 
         class EmbeddingsWrapper(torch.nn.Module):
@@ -448,9 +455,16 @@ class Qwen35Converter(BaseConverter):
                 return self.embed_tokens(input_ids).to(MODEL_DTYPE)
 
         wrapper = EmbeddingsWrapper(model).eval()
-        sample_input = torch.zeros((1, 1), dtype=torch.int32, device=TEST_DEVICE)
-        traced = torch.jit.trace(wrapper, sample_input)
-        input_shape = ct.EnumeratedShapes(shapes=[[1, 1], [1, self.batch_size]], default=[1, 1])
+
+        if seq_len is not None:
+            sample_input = torch.zeros((1, seq_len), dtype=torch.int32, device=TEST_DEVICE)
+            traced = torch.jit.trace(wrapper, sample_input)
+            input_shape = (1, seq_len)
+        else:
+            sample_input = torch.zeros((1, 1), dtype=torch.int32, device=TEST_DEVICE)
+            traced = torch.jit.trace(wrapper, sample_input)
+            input_shape = ct.EnumeratedShapes(shapes=[[1, 1], [1, self.batch_size]], default=[1, 1])
+
         mlmodel = ct.convert(
             traced,
             inputs=[ct.TensorType(name="input_ids", shape=input_shape, dtype=np.int32)],

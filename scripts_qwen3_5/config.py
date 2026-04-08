@@ -39,5 +39,5 @@ DEFAULT_HF_MODEL = os.environ.get(
 )
 DEFAULT_OUTPUT = os.environ.get(
     "QWEN35_OUTPUT",
-    os.path.join(REPO_ROOT, "qwen3_5_stable_models_testing"),
+    os.path.join(REPO_ROOT, "qwen3_5_stable_lut4ffn_lut6em_test"),
 )

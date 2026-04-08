@@ -47,6 +47,22 @@ def export_embeddings(model, out_dir, skip_existing, compute_precision="float16"
     del ml, conv; gc.collect()
     print(f"  Saved embeddings ({time.time()-t0:.1f}s)")
 
+    # Also export fixed-shape variants for ANE-safe multifunction combine
+    for seq_len, suffix in [(1, "embed_single"), (BATCH_SIZE, "embed_prefill")]:
+        fpath = os.path.join(out_dir, f"{suffix}.mlpackage")
+        if skip_existing and os.path.exists(fpath):
+            print(f"  [skip] {suffix}")
+            continue
+        print(f"  Exporting {suffix} (seq_len={seq_len})...")
+        t1 = time.time()
+        conv2 = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
+                                num_chunks=NUM_CHUNKS, lut_bits=LUT_BITS, per_channel=PER_CHANNEL,
+                                compute_precision=compute_precision)
+        ml2 = conv2.convert_part_1(model, seq_len=seq_len)
+        ml2.save(fpath)
+        del ml2, conv2; gc.collect()
+        print(f"  Saved {suffix} ({time.time()-t1:.1f}s)")
+
 
 def export_lm_head(model, out_dir, skip_existing, compute_precision="float16"):
     path = os.path.join(out_dir, "lm_head_logits.mlpackage")

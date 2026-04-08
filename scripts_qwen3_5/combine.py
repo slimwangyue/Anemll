@@ -31,11 +31,18 @@ def dir_size_mb(path):
 
 
 def combine_embed_lmhead(input_dir, skip_existing=False):
-    """Combine embeddings + lm_head_nosplit into a 2-function mlpackage with cross-model weight dedup."""
+    """Combine embeddings + lm_head_nosplit into a multi-function mlpackage with cross-model weight dedup.
+
+    Uses fixed-shape embed variants (embed_single [1,1] and embed_prefill [1,BS])
+    to avoid unknown MIL dimensions that cause E5ML stride errors on ANE.
+    Falls back to EnumeratedShapes embeddings.mlpackage if fixed variants don't exist.
+    """
     import coremltools as ct
     from anemll.utils.dedup_weights import prepare_dedup_sources, dedup_cross_model_blobs
 
-    embed_path = os.path.join(input_dir, "embeddings.mlpackage")
+    embed_single_path = os.path.join(input_dir, "embed_single.mlpackage")
+    embed_prefill_path = os.path.join(input_dir, "embed_prefill.mlpackage")
+    embed_legacy_path = os.path.join(input_dir, "embeddings.mlpackage")
     lmhead_path = os.path.join(input_dir, "lm_head_nosplit.mlpackage")
     combined_path = os.path.join(input_dir, "embed_lmhead_combined.mlpackage")
 
@@ -44,20 +51,31 @@ def combine_embed_lmhead(input_dir, skip_existing=False):
         print(f"  [skip] embed_lmhead_combined ({sz:.1f} MB)")
         return combined_path
 
-    if not os.path.exists(embed_path):
-        print(f"  ERROR: {embed_path} not found")
-        return None
     if not os.path.exists(lmhead_path):
         print(f"  ERROR: {lmhead_path} not found")
         return None
 
-    print(f"  Combining embed + lm_head into multifunction model with dedup...")
-    t0 = time.time()
+    # Prefer fixed-shape variants (ANE-safe), fall back to legacy
+    use_fixed = os.path.exists(embed_single_path) and os.path.exists(embed_prefill_path)
+    if use_fixed:
+        print(f"  Using fixed-shape embed variants (ANE-safe)...")
+        sources = [
+            (embed_single_path, "main", "embed"),
+            (embed_prefill_path, "main", "embed_prefill"),
+            (lmhead_path, "main", "lmhead"),
+        ]
+    else:
+        if not os.path.exists(embed_legacy_path):
+            print(f"  ERROR: neither embed_single/embed_prefill nor embeddings.mlpackage found")
+            return None
+        print(f"  WARNING: Using legacy EnumeratedShapes embeddings (may cause E5ML stride warnings on ANE)")
+        sources = [
+            (embed_legacy_path, "main", "embed"),
+            (lmhead_path, "main", "lmhead"),
+        ]
 
-    sources = [
-        (embed_path, "main", "embed"),
-        (lmhead_path, "main", "lmhead"),
-    ]
+    print(f"  Combining {len(sources)} functions into multifunction model with dedup...")
+    t0 = time.time()
 
     try:
         with prepare_dedup_sources(sources, verbose=True, preflight=False) as deduped:
@@ -68,9 +86,15 @@ def combine_embed_lmhead(input_dir, skip_existing=False):
             ct.utils.save_multifunction(desc, combined_path)
 
         print("  Running cross-model blob dedup post-processing...")
-        saved = dedup_cross_model_blobs(combined_path, "embed", "lmhead", verbose=True)
-        if saved > 0:
-            print(f"  Cross-model dedup saved {saved / 1e6:.1f} MB")
+        fn_names = [tgt for _, _, tgt in sources]
+        total_saved = 0
+        # Dedup all pairs of functions
+        for i in range(len(fn_names)):
+            for j in range(i + 1, len(fn_names)):
+                saved = dedup_cross_model_blobs(combined_path, fn_names[i], fn_names[j], verbose=True)
+                total_saved += saved
+        if total_saved > 0:
+            print(f"  Cross-model dedup saved {total_saved / 1e6:.1f} MB total")
         else:
             print("  Cross-model dedup: no savings (blobs may already be shared or differ)")
     except Exception as e:

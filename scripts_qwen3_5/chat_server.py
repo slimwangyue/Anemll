@@ -518,8 +518,10 @@ class ChatEngine:
         embed_lmhead = self.embed_lmhead_path or _find_model(
             self.model_dir, "embed_lmhead_combined")
         print(f"[engine] Loading embed + lmhead from {os.path.basename(embed_lmhead)}...")
-        self.embed = _load_model(embed_lmhead, cu, function_name="embed")
-        print("  embed function loaded")
+        self.embed = _load_model(embed_lmhead, cu, function_name="embedding_decode")
+        print("  embedding_decode function loaded (seq_len=1)")
+        self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embedding_prefill")
+        print(f"  embedding_prefill function loaded (seq_len={BATCH_SIZE})")
         self.lmhead = _load_model(embed_lmhead, cu, function_name="lmhead")
         self.lmhead_mode = "logits"
         self.logits_key = "logits"
@@ -788,7 +790,7 @@ class ChatEngine:
         input_ids[0, :] = 0
         input_ids[0, :valid_len] = token_ids
         hidden = list(
-            self.embed.predict({"input_ids": input_ids}).values())[0]
+            self.embed_prefill.predict({"input_ids": input_ids}).values())[0]
 
         # Build causal mask: (1, 1, BATCH_SIZE, CTX)
         # Valid positions get normal causal mask; padding rows get all -inf.
