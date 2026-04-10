@@ -1,0 +1,275 @@
+/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  Model: models/Qwen__Qwen3.5-4B
+  Baseline: qwen3_5_stable_lut4ffn_lut6em_fp16
+  FP32 ref: qwen3_5_stable_lut4ffn_lut6em_fp32
+  Max tokens: 40
+Loading tokenizer from models/Qwen__Qwen3.5-4B...
+Loading PyTorch model from models/Qwen__Qwen3.5-4B...
+
+======================================================================
+  PHASE 1: PyTorch Reference Traces
+======================================================================
+
+  Prompt 0: What is a stack in computer science?...
+    [18 prompt tok] → Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Deconstruct the Request:*
+
+  Prompt 1: 教我做红烧鱼...
+    [14 prompt tok] → Here's a thinking process that leads to the suggested recipe for Braised Fish (Hong Shao Yu):
+
+1.  **Analyze the Request
+
+  Prompt 2: A farmer has 17 sheep. All but 9 run away. How many are left...
+    [30 prompt tok] → Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer has 17 sheep. All but
+  Resuming: 6 results loaded, completed: ['C7_recurrence_core', 'baseline_fp16']
+
+======================================================================
+  PHASE 2: Fine-Grained Export & Inference
+======================================================================
+
+────────────────────────────────────────────────────────────
+  CANDIDATE: baseline_fp16
+────────────────────────────────────────────────────────────
+    [SKIP] Already completed in previous run
+
+────────────────────────────────────────────────────────────
+  CANDIDATE: C7_recurrence_core
+  Tightest: just exp/state/kv_mem/sub/delta (no L2-norm, no softplus)
+────────────────────────────────────────────────────────────
+    [SKIP] Already completed in previous run
+
+────────────────────────────────────────────────────────────
+  CANDIDATE: C1_recurrence_allL
+  Recurrence state update (all L layers): exp/mul/sub/add loop + L2-norm
+────────────────────────────────────────────────────────────
+    Exporting 9 chunks with C1_recurrence_allL precision islands...
+      Exporting chunk 0 [0-2]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1087 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  68%|██████▊   | 742/1087 [00:00<00:00, 7412.00 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1087/1087 [00:00<00:00, 7471.36 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 109.53 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  12%|█▏        | 11/95 [00:00<00:00, 105.83 passes/s]Running MIL default pipeline:  25%|██▌       | 24/95 [00:00<00:00, 116.33 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:01, 40.57 passes/s] Running MIL default pipeline:  51%|█████     | 48/95 [00:00<00:00, 54.02 passes/s]Running MIL default pipeline:  60%|██████    | 57/95 [00:01<00:01, 33.64 passes/s]Running MIL default pipeline:  67%|██████▋   | 64/95 [00:01<00:00, 35.75 passes/s]Running MIL default pipeline:  81%|████████  | 77/95 [00:01<00:00, 50.08 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 39.57 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 44.19 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 157.12 passes/s]
+      Saved chunk 0 (6.6s) — FP32:33 FP16:1327
+      Exporting chunk 1 [3-6]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  49%|████▉     | 813/1660 [00:00<00:00, 8127.33 ops/s]Converting PyTorch Frontend ==> MIL Ops:  98%|█████████▊| 1626/1660 [00:00<00:00, 6401.95 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6643.78 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.58 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.87 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 87.84 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.61 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.31 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.20 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.11 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 19.98 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 24.71 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.25 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.59 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 31.98 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 121.18 passes/s]
+      Saved chunk 1 (8.7s) — FP32:33 FP16:1762
+      Exporting chunk 2 [7-10]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|████▉     | 829/1660 [00:00<00:00, 8288.86 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|█████████▉| 1658/1660 [00:00<00:00, 6511.70 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6727.54 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.42 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.51 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 87.71 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.70 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.39 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.36 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.25 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.31 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.07 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.69 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.75 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.23 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 121.21 passes/s]
+      Saved chunk 2 (8.8s) — FP32:33 FP16:1762
+      Exporting chunk 3 [11-14]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 833/1660 [00:00<00:00, 8316.21 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6716.95 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.59 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.97 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 87.91 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.68 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.43 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.42 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.33 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.02 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 24.76 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.33 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.52 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.00 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 121.33 passes/s]
+      Saved chunk 3 (8.9s) — FP32:33 FP16:1762
+      Exporting chunk 4 [15-18]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 833/1660 [00:00<00:00, 8326.34 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6716.38 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.35 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.00 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 87.92 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.79 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.36 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.27 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.12 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.25 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.03 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.68 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.75 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.21 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 121.96 passes/s]
+      Saved chunk 4 (8.7s) — FP32:33 FP16:1762
+      Exporting chunk 5 [19-22]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 831/1660 [00:00<00:00, 8302.78 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6673.50 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.26 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.19 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 87.70 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.87 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.47 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.50 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.39 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.32 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.08 passes/s]Running MIL default pipeline:  86%|████████▋ | 82/95 [00:02<00:00, 37.52 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.59 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.28 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 122.64 passes/s]
+      Saved chunk 5 (9.0s) — FP32:33 FP16:1762
+      Exporting chunk 6 [23-26]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 831/1660 [00:00<00:00, 8306.01 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6649.05 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.71 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.23 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 88.10 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.79 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.41 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.38 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.33 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.34 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.11 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.78 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.81 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.30 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 122.34 passes/s]
+      Saved chunk 6 (8.9s) — FP32:33 FP16:1762
+      Exporting chunk 7 [27-30]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 831/1660 [00:00<00:00, 8296.64 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6631.27 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 80.67 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 83.34 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 85.67 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 85.44 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.27 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.24 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.16 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.25 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.00 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.62 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.77 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.17 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 122.69 passes/s]
+      Saved chunk 7 (9.1s) — FP32:33 FP16:1762
+      Exporting chunk 8 [31-31]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/597 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 597/597 [00:00<00:00, 8244.03 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 303.46 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  35%|███▍      | 33/95 [00:00<00:00, 327.55 passes/s]Running MIL default pipeline:  69%|██████▉   | 66/95 [00:00<00:00, 91.83 passes/s] Running MIL default pipeline:  97%|█████████▋| 92/95 [00:00<00:00, 108.16 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:00<00:00, 115.10 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 528.57 passes/s]
+      Saved chunk 8 (2.4s) — FP32:0 FP16:457
+    Total export: 71.5s — FP32:264 FP16:14118
+    Loading embed+lmhead...
+    Loading chunk 0 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 1 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 2 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 3 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 4 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 5 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 6 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 7 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 8 (ComputeUnit.CPU_AND_NE)...
+
+    Prompt 0: What is a stack in computer science?...
+      h_cos_pf=0.768924 h_cos_dec=0.096213 KL_dec=15.8013
+      top1=0% early_agree=0% rep=-1 1st=False
+      tps=6.3 pf_ms=3453 dec_ms=6221
+      Gen: The user is asking about the concept of "stack" in computer science. This is a straightforward quest
+
+    Prompt 1: 教我做红烧鱼...
+      h_cos_pf=0.821138 h_cos_dec=0.248627 KL_dec=13.8379
+      top1=23% early_agree=100% rep=-1 1st=True
+      tps=6.3 pf_ms=2407 dec_ms=6235
+      Gen: Here's a thinking process that leads to the suggested response:
+
+1.  **Analyze the Request:**
+    * 
+
+    Prompt 2: A farmer has 17 sheep. All but 9 run away. How man...
+      h_cos_pf=0.688672 h_cos_dec=0.397780 KL_dec=9.8255
+      top1=38% early_agree=100% rep=25 1st=True
+      tps=6.3 pf_ms=4944 dec_ms=6223
+      Gen: Thinking Process:
+
+1.  **Analyze the Request:** The user has provided a statement: "The The The The 
+    Cleaning up tests/dev/finegrain_fp32_results/C1_recurrence_allL...
+    [Saved 9 results]
+
+────────────────────────────────────────────────────────────
+  CANDIDATE: C3_full_recurrence
+  Full recurrence + softplus (all L layers): C1 ∪ C2
+────────────────────────────────────────────────────────────
+    Exporting 9 chunks with C3_full_recurrence precision islands...
+      Exporting chunk 0 [0-2]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1087 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  75%|███████▍  | 810/1087 [00:00<00:00, 8092.10 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1087/1087 [00:00<00:00, 7972.78 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 112.12 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  12%|█▏        | 11/95 [00:00<00:00, 106.21 passes/s]Running MIL default pipeline:  25%|██▌       | 24/95 [00:00<00:00, 117.41 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:01, 40.92 passes/s] Running MIL default pipeline:  51%|█████     | 48/95 [00:00<00:00, 54.37 passes/s]Running MIL default pipeline:  60%|██████    | 57/95 [00:01<00:01, 33.88 passes/s]Running MIL default pipeline:  67%|██████▋   | 64/95 [00:01<00:00, 34.18 passes/s]Running MIL default pipeline:  81%|████████  | 77/95 [00:01<00:00, 48.08 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 39.11 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 43.60 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 151.62 passes/s]
+      Saved chunk 0 (6.3s) — FP32:46 FP16:1314
+      Exporting chunk 1 [3-6]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 834/1660 [00:00<00:00, 8330.91 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6627.88 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 84.17 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.57 passes/s]Running MIL default pipeline:  20%|██        | 19/95 [00:00<00:00, 89.45 passes/s]Running MIL default pipeline:  29%|██▉       | 28/95 [00:00<00:00, 86.03 passes/s]Running MIL default pipeline:  39%|███▉      | 37/95 [00:00<00:02, 28.89 passes/s]Running MIL default pipeline:  48%|████▊     | 46/95 [00:01<00:01, 37.82 passes/s]Running MIL default pipeline:  58%|█████▊    | 55/95 [00:01<00:00, 46.71 passes/s]Running MIL default pipeline:  66%|██████▋   | 63/95 [00:02<00:01, 19.95 passes/s]Running MIL default pipeline:  76%|███████▌  | 72/95 [00:02<00:00, 26.53 passes/s]Running MIL default pipeline:  88%|████████▊ | 84/95 [00:02<00:00, 37.60 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 25.59 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.13 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.33 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.26 passes/s]
+      Saved chunk 1 (8.6s) — FP32:46 FP16:1749
+      Exporting chunk 2 [7-10]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  49%|████▉     | 821/1660 [00:00<00:00, 8198.92 ops/s]Converting PyTorch Frontend ==> MIL Ops:  99%|█████████▉| 1641/1660 [00:00<00:00, 6343.68 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6568.25 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.31 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.49 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 88.38 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 87.46 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.47 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.54 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.52 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.23 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.03 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.59 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.99 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.33 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 118.65 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 118.58 passes/s]
+      Saved chunk 2 (8.8s) — FP32:46 FP16:1749
+      Exporting chunk 3 [11-14]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 835/1660 [00:00<00:00, 8348.59 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 6627.91 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 84.03 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.99 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 88.09 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 86.84 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:02, 28.37 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 37.34 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 46.22 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.39 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 25.18 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.77 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 27.03 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 32.37 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.03 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 118.96 passes/s]
+      Saved chunk 3 (9.1s) — FP32:46 FP16:1749
+      Exporting chunk 4 [15-18]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 834/1660 [00:00<00:00, 8338.99 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 8185.48 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 84.36 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.75 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 88.53 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 87.36 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:01<00:02, 26.77 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 35.58 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 44.56 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.13 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 24.89 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.36 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.77 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 31.80 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 117.90 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 117.83 passes/s]
+      Saved chunk 4 (8.9s) — FP32:46 FP16:1749
+      Exporting chunk 5 [19-22]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|████▉     | 826/1660 [00:00<00:00, 8247.93 ops/s]Converting PyTorch Frontend ==> MIL Ops:  99%|█████████▉| 1651/1660 [00:00<00:00, 7895.64 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 7940.79 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.27 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:01, 85.89 passes/s]Running MIL default pipeline:  20%|██        | 19/95 [00:00<00:00, 89.20 passes/s]Running MIL default pipeline:  29%|██▉       | 28/95 [00:00<00:00, 86.09 passes/s]Running MIL default pipeline:  39%|███▉      | 37/95 [00:01<00:02, 27.02 passes/s]Running MIL default pipeline:  48%|████▊     | 46/95 [00:01<00:01, 35.71 passes/s]Running MIL default pipeline:  58%|█████▊    | 55/95 [00:01<00:00, 44.55 passes/s]Running MIL default pipeline:  66%|██████▋   | 63/95 [00:02<00:01, 20.02 passes/s]Running MIL default pipeline:  76%|███████▌  | 72/95 [00:02<00:00, 26.59 passes/s]Running MIL default pipeline:  88%|████████▊ | 84/95 [00:02<00:00, 37.66 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 25.61 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 31.76 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 116.85 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 116.75 passes/s]
+      Saved chunk 5 (11.4s) — FP32:46 FP16:1749
+      Exporting chunk 6 [23-26]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 838/1660 [00:00<00:00, 8379.67 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 8214.00 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 84.41 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 87.13 passes/s]Running MIL default pipeline:  20%|██        | 19/95 [00:00<00:00, 89.85 passes/s]Running MIL default pipeline:  29%|██▉       | 28/95 [00:00<00:00, 86.57 passes/s]Running MIL default pipeline:  39%|███▉      | 37/95 [00:01<00:02, 27.16 passes/s]Running MIL default pipeline:  48%|████▊     | 46/95 [00:01<00:01, 35.92 passes/s]Running MIL default pipeline:  58%|█████▊    | 55/95 [00:01<00:00, 44.85 passes/s]Running MIL default pipeline:  66%|██████▋   | 63/95 [00:02<00:01, 20.06 passes/s]Running MIL default pipeline:  75%|███████▍  | 71/95 [00:02<00:00, 25.86 passes/s]Running MIL default pipeline:  87%|████████▋ | 83/95 [00:02<00:00, 37.06 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 25.99 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 31.85 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.02 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 118.93 passes/s]
+      Saved chunk 6 (15.5s) — FP32:46 FP16:1749
+      Exporting chunk 7 [27-30]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1660 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  50%|█████     | 837/1660 [00:00<00:00, 8366.32 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1660/1660 [00:00<00:00, 8195.07 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 83.90 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:   9%|▉         | 9/95 [00:00<00:00, 86.16 passes/s]Running MIL default pipeline:  19%|█▉        | 18/95 [00:00<00:00, 88.27 passes/s]Running MIL default pipeline:  28%|██▊       | 27/95 [00:00<00:00, 87.24 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:01<00:02, 26.70 passes/s]Running MIL default pipeline:  47%|████▋     | 45/95 [00:01<00:01, 35.53 passes/s]Running MIL default pipeline:  57%|█████▋    | 54/95 [00:01<00:00, 44.49 passes/s]Running MIL default pipeline:  65%|██████▌   | 62/95 [00:02<00:01, 20.08 passes/s]Running MIL default pipeline:  73%|███████▎  | 69/95 [00:02<00:01, 24.83 passes/s]Running MIL default pipeline:  85%|████████▌ | 81/95 [00:02<00:00, 36.27 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 26.84 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 31.79 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.10 passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 119.01 passes/s]
+      Saved chunk 7 (19.5s) — FP32:46 FP16:1749
+      Exporting chunk 8 [31-31]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Torch var v_cache is added again.
+Torch var k_cache is added again.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/597 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 597/597 [00:00<00:00, 8198.06 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 301.36 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  35%|███▍      | 33/95 [00:00<00:00, 329.37 passes/s]Running MIL default pipeline:  69%|██████▉   | 66/95 [00:00<00:00, 92.18 passes/s] Running MIL default pipeline:  97%|█████████▋| 92/95 [00:00<00:00, 108.30 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:00<00:00, 115.30 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 531.68 passes/s]
+      Saved chunk 8 (2.9s) — FP32:0 FP16:457
+    Total export: 91.6s — FP32:368 FP16:14014
+    Loading embed+lmhead...
+    Loading chunk 0 (ComputeUnit.CPU_AND_NE)...
+    Loading chunk 1 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED.    Loading chunk 2 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 3 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 4 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 5 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 6 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 7 (ComputeUnit.CPU_AND_NE)...
+E5RT encountered an STL exception. msg = [MIL FileWriter]: Unknown error occured while writing data to the file..    Loading chunk 8 (ComputeUnit.CPU_AND_NE)...
+    *** Engine load failed: This model was not loaded with the Core ML Framework. Cannot get state.
+
+────────────────────────────────────────────────────────────
+  CANDIDATE: C5_combined
+  C3 + C4: all sensitive paths (recurrence + fullAttn)
+────────────────────────────────────────────────────────────
+    Exporting 9 chunks with C5_combined precision islands...
+      Exporting chunk 0 [0-2]...
+Tuple detected at graph output. This will be flattened in the converted model.
+Converting PyTorch Frontend ==> MIL Ops:   0%|          | 0/1087 [00:00<?, ? ops/s]Converting PyTorch Frontend ==> MIL Ops:  75%|███████▌  | 819/1087 [00:00<00:00, 8156.73 ops/s]Converting PyTorch Frontend ==> MIL Ops: 100%|██████████| 1087/1087 [00:00<00:00, 8007.07 ops/s]
+Running MIL frontend_pytorch pipeline:   0%|          | 0/5 [00:00<?, ? passes/s]Running MIL frontend_pytorch pipeline: 100%|██████████| 5/5 [00:00<00:00, 112.00 passes/s]
+Running MIL default pipeline:   0%|          | 0/95 [00:00<?, ? passes/s]Running MIL default pipeline:  12%|█▏        | 11/95 [00:00<00:00, 107.24 passes/s]Running MIL default pipeline:  25%|██▌       | 24/95 [00:00<00:00, 118.07 passes/s]Running MIL default pipeline:  38%|███▊      | 36/95 [00:00<00:01, 41.20 passes/s] Running MIL default pipeline:  51%|█████     | 48/95 [00:00<00:00, 54.84 passes/s]Running MIL default pipeline:  60%|██████    | 57/95 [00:01<00:01, 34.08 passes/s]Running MIL default pipeline:  67%|██████▋   | 64/95 [00:01<00:00, 36.49 passes/s]Running MIL default pipeline:  81%|████████  | 77/95 [00:01<00:00, 50.93 passes/s]Running MIL default pipeline:  97%|█████████▋| 92/95 [00:02<00:00, 40.32 passes/s]Running MIL default pipeline: 100%|██████████| 95/95 [00:02<00:00, 43.62 passes/s]
+Running MIL backend_mlprogram pipeline:   0%|          | 0/12 [00:00<?, ? passes/s]Running MIL backend_mlprogram pipeline: 100%|██████████| 12/12 [00:00<00:00, 154.18 passes/s]
+    *** Export FAILED: [MIL FileWriter]: Unknown error occurred while writing data to the file.
+Traceback (most recent call last):

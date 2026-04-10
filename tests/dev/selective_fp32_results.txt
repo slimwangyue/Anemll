@@ -1,0 +1,91 @@
+/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+==========================================================================================
+  Qwen3.5-4B — Selective FP32 Precision Experiment
+  Chunk 1: layers 3-6
+  Variants: 9
+==========================================================================================
+
+[1] Loading model...
+    Loaded in 14.2s
+
+[2] Preparing inputs...
+    Linear attn: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+
+[3] Exporting 9 variants...
+  [V0_fp16] CACHED (852.4 MB)
+  [V1_fp32] CACHED (873.4 MB)
+  [V2_exp] CACHED (852.4 MB)
+  [V3_exp_mul_add] CACHED (852.4 MB)
+  [V4_exp_mul_add_mm] CACHED (852.4 MB)
+  [V5_recurrence] CACHED (852.4 MB)
+  [V6_attn_input] CACHED (852.4 MB)
+  [V7_V5_plus_V6] CACHED (852.4 MB)
+  [V8_core_recurrence] CACHED (852.4 MB)
+
+[4] Running FP32 reference inference...
+    FP32 ref hidden norm: 7.807893
+
+[5] Testing 9 variants...
+
+  [V0_fp16] baseline FP16
+    ANE=True  cos=0.99943906  L2=0.2617  max=0.0312  lat=19.4ms
+
+  [V1_fp32] full FP32
+    ANE=True  cos=1.00000000  L2=0.0000  max=0.0000  lat=21.3ms
+
+  [V2_exp] exp → FP32
+    ANE=True  cos=0.99944311  L2=0.2608  max=0.0303  lat=19.3ms
+
+  [V3_exp_mul_add] exp+mul+add → FP32
+    ANE=True  cos=0.00399141  L2=96.6693  max=7.9028  lat=16.1ms
+
+  [V4_exp_mul_add_mm] exp+mul+add+matmul → FP32
+    ANE=True  cos=0.99944174  L2=0.2609  max=0.0352  lat=17.9ms
+
+  [V5_recurrence] recurrence full → FP32
+    ANE=True  cos=0.00397836  L2=96.6775  max=7.9028  lat=16.0ms
+
+  [V6_attn_input] attn-input → FP32
+    ANE=True  cos=0.99944526  L2=0.2602  max=0.0303  lat=19.4ms
+
+  [V7_V5_plus_V6] recurrence + attn → FP32
+    ANE=True  cos=0.99944431  L2=0.2603  max=0.0332  lat=16.8ms
+
+  [V8_core_recurrence] core recurrence → FP32
+    ANE=True  cos=0.99944198  L2=0.2611  max=0.0293  lat=19.6ms
+
+==================================================================================================================================
+  ABLATION RESULTS TABLE  (reference = V1_fp32)
+==================================================================================================================================
+Variant                Description                  ANE   Cos(hidden)         L2    MaxDiff     RecCos      RecL2  Lat(ms)    Size
+----------------------------------------------------------------------------------------------------------------------------------
+  V0_fp16                baseline FP16                  Y    0.99943906     0.2617     0.0312   0.986949     0.0977     19.4    852M
+  V1_fp32                full FP32                      Y    1.00000000     0.0000     0.0000   1.000000     0.0000     21.3    873M
+  V2_exp                 exp → FP32                     Y    0.99944311     0.2608     0.0303   0.986959     0.0977     19.3    852M
+  V3_exp_mul_add         exp+mul+add → FP32             Y    0.00399141    96.6693     7.9028  -0.005067     0.8326     16.1    852M
+  V4_exp_mul_add_mm      exp+mul+add+matmul → FP32      Y    0.99944174     0.2609     0.0352   0.986998     0.0976     17.9    852M
+  V5_recurrence          recurrence full → FP32         Y    0.00397836    96.6775     7.9028  -0.005027     0.8328     16.0    852M
+  V6_attn_input          attn-input → FP32              Y    0.99944526     0.2602     0.0303   0.986983     0.0977     19.4    852M
+  V7_V5_plus_V6          recurrence + attn → FP32       Y    0.99944431     0.2603     0.0332   0.986970     0.0977     16.8    852M
+  V8_core_recurrence     core recurrence → FP32         Y    0.99944198     0.2611     0.0293   0.986986     0.0976     19.6    852M
+
+==========================================================================================
+  ANALYSIS
+==========================================================================================
+
+  FP16 baseline: cos=0.99943906, lat=19.4ms
+  FP32 full:     cos=1.00000000, lat=21.3ms
+  Quality gap:   0.00056094
+  V2_exp: 0.7% quality recovered, 1.00x slowdown, score=0.007
+  V3_exp_mul_add: -177460.8% quality recovered, 0.83x slowdown, score=-2136.461
+  V4_exp_mul_add_mm: 0.5% quality recovered, 0.92x slowdown, score=0.005
+  V5_recurrence: -177463.1% quality recovered, 0.83x slowdown, score=-2146.508
+  V6_attn_input: 1.1% quality recovered, 1.00x slowdown, score=0.011
+  V7_V5_plus_V6: 0.9% quality recovered, 0.87x slowdown, score=0.011
+  V8_core_recurrence: 0.5% quality recovered, 1.01x slowdown, score=0.005
+
+  >>> BEST TRADEOFF: V6_attn_input (score=0.011)
+
+  Files in: /tmp/qwen35_selective_fp32
+  Done!

@@ -1,0 +1,159 @@
+/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+  Model: models/Qwen__Qwen3.5-4B
+  FP16 dir: qwen3_5_stable_lut4ffn_lut6em_fp16
+  FP32 dir: qwen3_5_stable_lut4ffn_lut6em_fp32
+  Chunk2: layers 7-10 (FLLL)
+  Max tokens: 40
+Loading tokenizer from qwen3_5_stable_lut4ffn_lut6em_fp32...
+  P0: What is a stack in computer science?... (18 tokens)
+  P1: 教我做红烧鱼... (14 tokens)
+  P2: A farmer has 17 sheep. All but 9 run away. How man... (30 tokens)
+
+Loading PyTorch model from models/Qwen__Qwen3.5-4B...
+  PyTorch model loaded.
+
+======================================================================
+  PHASE 0: Export Chunk2 Single-Layer Variants
+======================================================================
+
+  layer7_fp16_only: Layer 7 (F) → FP16
+      [skip] tests/dev/chunk2_knockout_results/exported_chunks/chunk2_layer7_fp16_only.mlpackage exists
+
+  layer8_fp16_only: Layer 8 (L) → FP16
+      [skip] tests/dev/chunk2_knockout_results/exported_chunks/chunk2_layer8_fp16_only.mlpackage exists
+
+  layer9_fp16_only: Layer 9 (L) → FP16
+      [skip] tests/dev/chunk2_knockout_results/exported_chunks/chunk2_layer9_fp16_only.mlpackage exists
+
+  layer10_fp16_only: Layer 10 (L) → FP16
+      [skip] tests/dev/chunk2_knockout_results/exported_chunks/chunk2_layer10_fp16_only.mlpackage exists
+
+======================================================================
+  PHASE 1: Full FP32 Reference
+======================================================================
+    [Cleared BNNS cache]
+    Loading embed+lmhead...
+    Loading chunk 0 [FP32] ...
+    Loading chunk 1 [FP32] ...
+    Loading chunk 2 [FP32] ...
+    Loading chunk 3 [FP32] ...
+    Loading chunk 4 [FP32] ...
+    Loading chunk 5 [FP32] ...
+    Loading chunk 6 [FP32] ...
+    Loading chunk 7 [FP32] ...
+    Loading chunk 8 [FP32] ...
+
+  P0: What is a stack in computer science?...
+    tps=6.5 rep=-1
+    Gen: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   **Topic:** Stack in 
+
+  P1: 教我做红烧鱼...
+    tps=6.7 rep=-1
+    Gen: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the Request:**
+    *   **
+
+  P2: A farmer has 17 sheep. All but 9 run away. How man...
+    tps=6.7 rep=-1
+    Gen: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer has 17 sheep. All but
+
+======================================================================
+  PHASE 2: Single-Layer FP16 Knockouts (hot-swap chunk2)
+======================================================================
+
+────────────────────────────────────────────────────────────
+  layer7_fp16_only
+────────────────────────────────────────────────────────────
+    Swapping chunk 2 → [chunk2_layer7_fp16_only] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% early=90% rep=-1 tps=6.6
+      h_cos_pf=0.975978 h_cos_dec=0.364227 kl_dec=18.7701
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=34/40 match=88% early=100% rep=-1 tps=6.6
+      h_cos_pf=0.988990 h_cos_dec=0.917726 kl_dec=1.9466
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% early=100% rep=-1 tps=6.5
+      h_cos_pf=0.947319 h_cos_dec=0.984341 kl_dec=0.0021
+    Swapping chunk 2 → [chunk2] ...
+
+────────────────────────────────────────────────────────────
+  layer8_fp16_only
+────────────────────────────────────────────────────────────
+    Swapping chunk 2 → [chunk2_layer8_fp16_only] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% early=90% rep=-1 tps=6.7
+      h_cos_pf=0.976079 h_cos_dec=0.364445 kl_dec=18.7487
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=34/40 match=88% early=100% rep=-1 tps=6.6
+      h_cos_pf=0.989011 h_cos_dec=0.917586 kl_dec=1.9503
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% early=100% rep=-1 tps=6.6
+      h_cos_pf=0.946827 h_cos_dec=0.984237 kl_dec=0.0022
+    Swapping chunk 2 → [chunk2] ...
+
+────────────────────────────────────────────────────────────
+  layer9_fp16_only
+────────────────────────────────────────────────────────────
+    Swapping chunk 2 → [chunk2_layer9_fp16_only] ...
+E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED.
+    P0: What is a stack in computer science?...
+    *** make_state failed: This model was not loaded with the Core ML Framework. Cannot get state.
+Traceback (most recent call last):
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 1015, in <module>
+    main()
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 1011, in main
+    run_experiment(args)
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 838, in run_experiment
+    pm = run_variant(vname, vpath, fn_name=None)
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 794, in run_variant
+    result = engine.generate(prompt_tokens[pi], args.max_tokens, stop_ids,
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 561, in generate
+    last_tok, last_hidden, last_logits = self.step(tid, i)
+  File "/Users/yw68/Anemll/tests/dev/chunk2_layer_knockout.py", line 540, in step
+    out = self.ffns[ci].predict(inp, state=self.states[ci])
+  File "/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/coremltools/models/model.py", line 872, in predict
+    raise self._framework_error
+  File "/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/coremltools/models/model.py", line 617, in _get_proxy_and_spec
+    _MLModelProxy(
+RuntimeError: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/chunk2_layer9_fp16_only_958A80D6-6959-41F9-9026-12E14205B705.mlmodelc/model.mil' with error code: -14.";
+}

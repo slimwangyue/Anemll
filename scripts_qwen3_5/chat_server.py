@@ -518,10 +518,22 @@ class ChatEngine:
         embed_lmhead = self.embed_lmhead_path or _find_model(
             self.model_dir, "embed_lmhead_combined")
         print(f"[engine] Loading embed + lmhead from {os.path.basename(embed_lmhead)}...")
-        self.embed = _load_model(embed_lmhead, cu, function_name="embedding_decode")
-        print("  embedding_decode function loaded (seq_len=1)")
-        self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embedding_prefill")
-        print(f"  embedding_prefill function loaded (seq_len={BATCH_SIZE})")
+        # Try both naming conventions: combine.py uses "embed"/"embed_prefill",
+        # older builds may use "embedding_decode"/"embedding_prefill"
+        try:
+            self.embed = _load_model(embed_lmhead, cu, function_name="embedding_decode")
+            embed_fn = "embedding_decode"
+        except (ValueError, RuntimeError):
+            self.embed = _load_model(embed_lmhead, cu, function_name="embed")
+            embed_fn = "embed"
+        print(f"  {embed_fn} function loaded (seq_len=1)")
+        try:
+            self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embedding_prefill")
+            embed_pf_fn = "embedding_prefill"
+        except (ValueError, RuntimeError):
+            self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embed_prefill")
+            embed_pf_fn = "embed_prefill"
+        print(f"  {embed_pf_fn} function loaded (seq_len={BATCH_SIZE})")
         self.lmhead = _load_model(embed_lmhead, cu, function_name="lmhead")
         self.lmhead_mode = "logits"
         self.logits_key = "logits"

@@ -1,0 +1,370 @@
+/Users/yw68/Anemll/.venv/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+Loading tokenizer from qwen3_5_stable_lut4ffn_lut6em_fp32...
+  P0: What is a stack in computer science?... (18 tokens)
+  P1: 教我做红烧鱼... (14 tokens)
+  P2: A farmer has 17 sheep. All but 9 run away. How man... (30 tokens)
+
+======================================================================
+  PHASE 0: Full FP32 Reference
+======================================================================
+    [Cleared BNNS cache]
+    Loading embed+lmhead...
+    Loading chunk 0 [FP32] ...
+    Loading chunk 1 [FP32] ...
+    Loading chunk 2 [FP32] ...
+    Loading chunk 3 [FP32] ...
+    Loading chunk 4 [FP32] ...
+    Loading chunk 5 [FP32] ...
+    Loading chunk 6 [FP32] ...
+    Loading chunk 7 [FP32] ...
+    Loading chunk 8 [FP32] ...
+
+  P0: What is a stack in computer science?...
+    tps=6.6 rep=-1
+    Gen: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   **Topic:** Stack in 
+
+  P1: 教我做红烧鱼...
+    tps=6.6 rep=-1
+    Gen: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the Request:**
+    *   **
+
+  P2: A farmer has 17 sheep. All but 9 run away. How man...
+    tps=6.7 rep=-1
+    Gen: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer has 17 sheep. All but
+
+======================================================================
+  PHASE 1: Single-Chunk FP16 Knockout (hot-swap)
+  (Swap one chunk to FP16, rest stay FP32)
+======================================================================
+
+────────────────────────────────────────────────────────────
+  knock_chunk0: chunk0[0-2](LLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 0 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.6
+      h_cos_pf=0.990823 h_cos_dec=0.363579 kl_dec=18.7160
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=12/40 match=30% tps=6.7
+      h_cos_pf=0.996773 h_cos_dec=0.448008 kl_dec=15.0765
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 recipe:
+
+1.  **Analyze the Request:**
+    *
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.7
+      h_cos_pf=0.946300 h_cos_dec=0.980227 kl_dec=0.0018
+    Swapping chunk 0 → [FP32] ...
+
+  → chunk0[0-2](LLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk1: chunk1[3-6](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 1 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.8
+      h_cos_pf=0.933860 h_cos_dec=0.356993 kl_dec=16.8727
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=34/40 match=88% tps=6.9
+      h_cos_pf=0.974124 h_cos_dec=0.868506 kl_dec=1.8737
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✗ 1st=True consec=13/40 match=32% tps=6.9
+      h_cos_pf=0.860847 h_cos_dec=0.504727 kl_dec=13.7773
+      REF: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer h
+      VAR: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Input: "A farmer has 17 sheep. All but 9 run
+    Swapping chunk 1 → [FP32] ...
+
+  → chunk1[3-6](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk2: chunk2[7-10](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 2 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.9
+      h_cos_pf=0.951274 h_cos_dec=0.359647 kl_dec=17.9884
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=12/40 match=30% tps=6.8
+      h_cos_pf=0.961952 h_cos_dec=0.402697 kl_dec=16.4932
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 recipe:
+
+1.  **Analyze the Request:**
+    *
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✗ 1st=True consec=18/40 match=45% tps=6.8
+      h_cos_pf=0.864774 h_cos_dec=0.665677 kl_dec=11.2556
+      REF: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer h
+      VAR: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a riddle: "A farmer has 17 sh
+    Swapping chunk 2 → [FP32] ...
+
+  → chunk2[7-10](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk3: chunk3[11-14](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 3 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✓ 1st=True consec=40/40 match=100% tps=6.8
+      h_cos_pf=0.968065 h_cos_dec=0.947324 kl_dec=0.0148
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=36/40 match=90% tps=6.9
+      h_cos_pf=0.987127 h_cos_dec=0.927636 kl_dec=1.2622
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.8
+      h_cos_pf=0.931428 h_cos_dec=0.961551 kl_dec=0.0222
+    Swapping chunk 3 → [FP32] ...
+
+  → chunk3[11-14](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk4: chunk4[15-18](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 4 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.8
+      h_cos_pf=0.971003 h_cos_dec=0.362247 kl_dec=18.1666
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Analy
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=10/40 match=25% tps=6.9
+      h_cos_pf=0.985337 h_cos_dec=0.455067 kl_dec=14.4076
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested recipe for Braised Fish (Hong Shao Yu):
+
+1.  *
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.9
+      h_cos_pf=0.937692 h_cos_dec=0.939822 kl_dec=0.0109
+    Swapping chunk 4 → [FP32] ...
+
+  → chunk4[15-18](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk5: chunk5[19-22](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 5 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=29/40 match=72% tps=6.9
+      h_cos_pf=0.952148 h_cos_dec=0.790670 kl_dec=5.0901
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=10/40 match=28% tps=6.8
+      h_cos_pf=0.974075 h_cos_dec=0.426465 kl_dec=14.5925
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested recipe for Red Braised Fish (Hong Shao Yu):
+
+1
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✗ 1st=True consec=21/40 match=55% tps=6.8
+      h_cos_pf=0.896263 h_cos_dec=0.660660 kl_dec=7.9012
+      REF: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle: "A farmer h
+      VAR: Thinking Process:
+
+1.  **Analyze the Request:** The user is presenting a classic riddle.
+    *   Pre
+    Swapping chunk 5 → [FP32] ...
+
+  → chunk5[19-22](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk6: chunk6[23-26](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 6 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.9
+      h_cos_pf=0.980311 h_cos_dec=0.358592 kl_dec=18.8618
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Analy
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=10/40 match=68% tps=6.9
+      h_cos_pf=0.983721 h_cos_dec=0.788362 kl_dec=4.7007
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested recipe for Braised Fish (红烧鱼):
+
+1.  **Analyze 
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.8
+      h_cos_pf=0.982454 h_cos_dec=0.964852 kl_dec=0.0073
+    Swapping chunk 6 → [FP32] ...
+
+  → chunk6[23-26](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk7: chunk7[27-30](FLLL) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 7 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✓ 1st=True consec=40/40 match=100% tps=6.8
+      h_cos_pf=0.967726 h_cos_dec=0.967123 kl_dec=0.0201
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=34/40 match=88% tps=6.9
+      h_cos_pf=0.973009 h_cos_dec=0.902753 kl_dec=1.6882
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.9
+      h_cos_pf=0.979554 h_cos_dec=0.929888 kl_dec=0.0066
+    Swapping chunk 7 → [FP32] ...
+
+  → chunk7[27-30](FLLL): SENSITIVE ✗
+
+────────────────────────────────────────────────────────────
+  knock_chunk8: chunk8[31-31](F) → FP16, rest FP32
+────────────────────────────────────────────────────────────
+    Swapping chunk 8 → [FP16] ...
+
+    P0: What is a stack in computer science?...
+      ✗ 1st=True consec=9/40 match=22% tps=6.9
+      h_cos_pf=0.986137 h_cos_dec=0.370166 kl_dec=18.1071
+      REF: Here's a thinking process that leads to the suggested answer:
+
+1.  **Analyze the Request:**
+    *   
+      VAR: Here's a thinking process that leads to the explanation of a stack in computer science:
+
+1.  **Decon
+
+    P1: 教我做红烧鱼...
+      ✗ 1st=True consec=36/40 match=90% tps=6.9
+      h_cos_pf=0.970520 h_cos_dec=0.920790 kl_dec=1.3620
+      REF: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+      VAR: Here's a thinking process that leads to the suggested红烧鱼 (Braised Fish) recipe:
+
+1.  **Analyze the R
+
+    P2: A farmer has 17 sheep. All but 9 run away. How man...
+      ✓ 1st=True consec=40/40 match=100% tps=6.8
+      h_cos_pf=0.978189 h_cos_dec=0.971342 kl_dec=0.0027
+    Swapping chunk 8 → [FP32] ...
+
+  → chunk8[31-31](F): SENSITIVE ✗
+
+======================================================================
+  PHASE 1 SUMMARY: Chunk-Level Sensitivity
+======================================================================
+  chunk0[0-2](LLL)                         SENSITIVE ✗
+  chunk1[3-6](FLLL)                        SENSITIVE ✗
+  chunk2[7-10](FLLL)                       SENSITIVE ✗
+  chunk3[11-14](FLLL)                      SENSITIVE ✗
+  chunk4[15-18](FLLL)                      SENSITIVE ✗
+  chunk5[19-22](FLLL)                      SENSITIVE ✗
+  chunk6[23-26](FLLL)                      SENSITIVE ✗
+  chunk7[27-30](FLLL)                      SENSITIVE ✗
+  chunk8[31-31](F)                         SENSITIVE ✗
+
+  Safe chunks: [] (0/9)
+  Sensitive chunks: [0, 1, 2, 3, 4, 5, 6, 7, 8] (9/9)
+
+  *** No safe chunks found. Cannot optimize further.
