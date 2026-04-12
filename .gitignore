@@ -72,3 +72,6 @@ artifacts/
 qwen3_5_stable_lut4ffn_lut6em_fp16/
 qwen3_5_stable_lut4ffn_lut6em_fp32/
 tests/dev/_fullpipe_results/
+qwen3_5_v4_lut4/
+qwen3_5_v4_lut4_fp16/
+qwen3_5_v4_lut4_selfp32/

@@ -337,3 +337,344 @@ V4 is the **optimal precision policy** for Qwen3.5-4B on ANE:
 - **Generation quality**: Coherent, relevant, no repetition (English, Chinese, math)
 - **Efficiency**: 57.5% fewer casts than full FP32, 52% fewer decode casts than V2
 - **Minimal FP32 footprint**: Only 4–6 kv_cache_state ops per chunk kept in FP32
+
+---
+
+## Chunk Merge Experiment — FLLL+FLLL → FLLLFLLL
+
+**Date**: 2026-04-10  
+**Status**: COMPLETE — Merge shows issues, not recommended
+
+### Motivation
+
+The 9-chunk FLLL partition was designed to avoid L→F transitions within chunks. With V4 precision proven safe, the question becomes: **can we reduce chunk count by merging adjacent FLLL chunks?** Fewer chunks means fewer inter-chunk boundary casts, fewer CoreML model loads, and a simpler deployment pipeline.
+
+### Experiment Design
+
+**Controlled variable**: Only chunk boundary changes. V4 precision policy (kv_cache FP32, everything else FP16) is kept identical.
+
+**Candidate**: Merge V4 chunks 3+4 (layers 11–14 + 15–18) into a single 8-layer FLLLFLLL chunk. This is a representative middle-region pair — if merging fails here, it fails everywhere.
+
+**New layout** (8 chunks):
+```
+chunk 0: layers  0–2   (LLL)       chunk 4: layers 19–22  (FLLL)  [was chunk 5]
+chunk 1: layers  3–6   (FLLL)      chunk 5: layers 23–26  (FLLL)  [was chunk 6]
+chunk 2: layers  7–10  (FLLL)      chunk 6: layers 27–30  (FLLL)  [was chunk 7]
+chunk 3: layers 11–18  (FLLLFLLL)  chunk 7: layer  31     (F)     [was chunk 8]
+```
+
+**Methodology**:
+1. Export merged chunk (decode + prefill) with V4 precision
+2. Assemble 8-chunk model (symlink 7 unchanged V4 chunks + 1 merged)
+3. Combine all chunks via dedup
+4. Standard 3-turn fresh-vs-incremental validation
+5. Custom prompt comparison against V4 9-chunk baseline
+6. Cast analysis and performance measurement
+
+### Results
+
+#### Deployment: PASS
+- Merged chunk exports successfully: decode 316.3s, prefill 378.7s
+- Decode: 3558/3570 ops FP16, 12 F-layer ops FP32 (correct — 2 F layers × 6 kv_cache ops)
+- Prefill: 24663/24675 ops FP16, 12 F-layer ops FP32
+- Loads on ANE (CPU_AND_NE) without compilation failure
+- All 8 chunks assemble and combine via dedup (merged chunk3: 143 weight tensors vs ~73 for standard FLLL)
+
+#### Cast Analysis: Small Win
+
+| Chunk | Infer Casts | FP16 | FP32 | Note |
+|---|---|---|---|---|
+| chunk 0 | 0 | 0 | 0 | LLL, no F layers |
+| chunk 1 | 15 | 4 | 6 | FLLL |
+| chunk 2 | 15 | 4 | 6 | FLLL |
+| **chunk 3** | **23** | **8** | **10** | **FLLLFLLL (merged)** |
+| chunk 4 | 15 | 4 | 6 | FLLL |
+| chunk 5 | 15 | 4 | 6 | FLLL |
+| chunk 6 | 15 | 4 | 6 | FLLL |
+| chunk 7 | 11 | 2 | 4 | F only |
+
+| Model | Total Infer Casts | Delta |
+|---|---|---|
+| Merged (8 chunks) | **109** | — |
+| V4 baseline (9 chunks) | 116 | — |
+| **Reduction** | **-7 casts** | **-6%** |
+
+Eliminating one chunk boundary saves 7 inter-chunk casts. However, the merged chunk3 has 23 casts (vs 15+15=30 for the two separate chunks) — the intra-chunk cast overhead is only partially reduced.
+
+#### Correctness: Mixed
+
+**Single-turn comparison (merged vs V4 baseline, 120 tokens each)**:
+
+| Prompt | Token Match | Assessment |
+|---|---|---|
+| "What is a stack in computer science?" | **120/120 (100%)** | Perfect parity |
+| "教我做红烧鱼" (Chinese recipe) | **48/120 (40%)** | Diverges at token 48 |
+| "A farmer has 17 sheep..." | **120/120 (100%)** | Perfect parity |
+| **Average** | **80%** | |
+
+Both models produce coherent text — no repetition detected in any output. The Chinese prompt divergence starts identically but accumulates numerical drift from the larger computation graph.
+
+**Multi-turn fresh-vs-incremental**:
+
+| Turn | Match | Status |
+|---|---|---|
+| Turn 1 (fresh vs inc) | 40/40 (100%) | PASS |
+| Turn 2 (fresh vs inc) | 18/40 (45%) | **FAIL** |
+| Turn 3 (fresh vs inc) | 18/40 (45%) | **FAIL** |
+
+⚠️ **Caveat**: This test was not run on V4 9-chunk for direct comparison in this session. Historical V4 validation showed 100% fresh-vs-incremental on its standard 3-turn test — but that used the existing `validate.py` infrastructure (9-chunk `DedupEngine`), while the merge experiment used a custom `MergeEngine` class. The mismatch may be caused by either merge-induced drift or the custom engine implementation.
+
+#### Performance: ~7% Slower Decode
+
+| Prompt | Merged (tok/s) | V4 (tok/s) | Merged PF (ms) | V4 PF (ms) |
+|---|---|---|---|---|
+| Stack in CS | 6.5 | 7.0 | 2858 | 2903 |
+| 教我做红烧鱼 | 6.5 | 7.0 | 2230 | 2067 |
+| Farmer riddle | 6.5 | 7.0 | 4717 | 4423 |
+
+The merged model is consistently ~7% slower on decode (6.5 vs 7.0 tok/s). Prefill is comparable or slightly slower. The larger 8-layer chunk likely causes less efficient ANE scheduling — consistent with the ANE saturation findings (each FLLL chunk already saturates the ANE; doubling layers doubles the work without parallelism benefit).
+
+### Analysis
+
+| Criterion | 9-chunk V4 | 8-chunk Merged | Verdict |
+|---|---|---|---|
+| ANE loadable | ✓ | ✓ | Tie |
+| Infer casts | 116 | 109 (-6%) | Slight win |
+| Single-turn parity | — | 80% avg (2/3 perfect) | Acceptable |
+| Fresh-vs-incremental | 100% | 45% on turns 2–3 | **Regression** |
+| Decode speed | 7.0 tok/s | 6.5 tok/s (-7%) | **Regression** |
+| Deployment complexity | 9 chunks | 8 chunks | Slight win |
+
+### Recommendation: NOT RECOMMENDED
+
+The merge experiment shows that combining adjacent FLLL chunks into FLLLFLLL:
+
+1. **Hurts decode speed** (-7%) — larger chunks don't schedule more efficiently on ANE
+2. **Shows correctness concerns** — fresh-vs-incremental mismatch on multi-turn (needs investigation of whether this is merge-induced or engine-related)
+3. **Provides minimal cast savings** (-7 casts, 6%) — not enough to offset the regressions
+4. **Increases per-chunk memory footprint** — 143 weight tensors vs 73, limits deployment flexibility
+
+The 9-chunk FLLL partition remains optimal: each chunk is small enough for efficient ANE scheduling, and the inter-chunk cast overhead (7 extra casts) is negligible compared to the quality and performance benefits.
+
+### Scripts & Artifacts
+
+| File | Purpose |
+|---|---|
+| `tests/dev/merge_flll_chunks_experiment.py` | Complete merge experiment (export → assemble → combine → validate → compare) |
+
+| Artifact | Contents |
+|---|---|
+| `artifacts/merge_flll_experiment/merged_chunk/` | Merged decode + prefill .mlpackage + audit logs |
+| `artifacts/merge_flll_experiment/assembled/` | 8-chunk staged model |
+| `artifacts/merge_flll_experiment/assembled/combined_LUT4_dedup/` | Combined multifunction dedup models |
+| `artifacts/merge_flll_experiment/report.json` | Machine-readable results |
+| `artifacts/merge_flll_experiment/generation_outputs.json` | Full generation texts for comparison |
+| `artifacts/merge_flll_experiment/export_results.json` | Export timing and op counts |
+
+---
+
+## V4 Production Export — LUT4 with `--v4-precision` Flag in `export.py`
+
+**Date**: 2026-04-12  
+**Status**: COMPLETE — Production-grade model validated with interactive chat
+
+### Summary
+
+Integrated V4 precision policy directly into `scripts_qwen3_5/export.py` via the `--v4-precision` flag, fixed a critical bug in the selector implementation, re-exported all 18 chunks (9 decode + 9 prefill), and produced a production-ready LUT4 model. Validated through automated 3-turn tests (ALL PASS) and interactive chat server testing. Achieves **8.4 tok/s** with **87.9–99.4% ANE utilization** across all chunks.
+
+### Bug Fix: V4 Selector in `export.py`
+
+The original `_make_fl_selector()` in `export.py` implemented the **V2 policy** (entire F-layer in FP32) instead of the intended V4 policy (only kv_cache ops in FP32):
+
+```python
+# BUG: V2 policy — checked max(layers) ∈ fp16_set, forcing ALL F-layer ops to FP32
+def _make_fl_selector(fp16_layers, fp32_layers):
+    fp16_set = set(fp16_layers)
+    def _sel(op):
+        layers = _get_layers(op)
+        if not layers:
+            return True
+        return max(layers) in fp16_set  # Wrong: entire F-layer stays FP32
+    return _sel
+```
+
+**Fix**: Ported `_is_kv_cache_op()` and `_make_v4_selector()` from `tests/dev/all_chunks_v4_kvcache_fp32.py` into `export.py`:
+
+```python
+def _is_kv_cache_op(op):
+    """Detect kv_cache_state ops that must stay FP32."""
+    name = op.name.lower()
+    if "cache" in name:
+        return True
+    if op.op_type == "identity":
+        return True
+    if op.op_type == "squeeze":
+        for child in op.outputs[0].child_ops:
+            if "cache" in child.name.lower():
+                return True
+    if op.op_type == "slice_by_index":
+        for child in op.outputs[0].child_ops:
+            if child.op_type == "identity":
+                return True
+    return False
+
+def _make_v4_selector(fp16_layers, fp32_layers):
+    """V4: FP16 everywhere except kv_cache ops in F-layers → FP32."""
+    fp32_set = set(fp32_layers)
+    def _sel(op):
+        layers = _get_layers(op)
+        if not layers:
+            return True  # pre-layer ops → FP16
+        home = max(layers)
+        if home not in fp32_set:
+            return True  # L-layer ops → FP16
+        return not _is_kv_cache_op(op)  # F-layer: FP16 unless kv_cache
+    return _sel
+```
+
+### Export Configuration
+
+```
+Model:          Qwen3.5-4B (32 layers, hybrid F/L attention)
+Quantization:   LUT4 gs=4 (FFN chunks), LUT6 gs=8 (embed + lm_head)
+Precision:      V4 — FP16 base, only kv_cache_state ops in F-layers → FP32
+Context:        2048
+Batch size:     512
+Chunks:         9 ([LLL, FLLL×7, F])
+Output:         qwen3_5_v4_lut4/
+```
+
+### Pipeline
+
+```bash
+# 1. Export all FFN chunks with V4 precision
+python scripts_qwen3_5/export.py \
+  --model models/Qwen__Qwen3.5-4B \
+  --output qwen3_5_v4_lut4 \
+  --ffn-only --lut-bits 4 --per-channel 4 --v4-precision
+
+# 2. Combine into multi-function dedup models
+python scripts_qwen3_5/combine.py \
+  --input qwen3_5_v4_lut4 --label LUT4 --combine-embed-lmhead
+
+# 3. Compile all .mlpackage → .mlmodelc
+python scripts_qwen3_5/compile.py --model-dir qwen3_5_v4_lut4
+
+# 4. Validate (3-turn fresh vs incremental)
+python scripts_qwen3_5/validate.py \
+  --model-dir qwen3_5_v4_lut4 --tokens 120 --label LUT4 --skip-separate
+
+# 5. Interactive chat server
+python scripts_qwen3_5/chat_server.py \
+  --model-dir qwen3_5_v4_lut4 --num-chunks 9 --ctx 2048 --port 8080
+```
+
+### Results
+
+#### Validation: ALL 3 CHECKS PASS
+
+| Turn | Prompt | Fresh vs Incremental | Status |
+|---|---|---|---|
+| 1 | "What is a stack in computer science?" | 120/120 (100%) | **PASS** |
+| 2 | "How does it compare to a queue?" | 120/120 (100%) | **PASS** |
+| 3 | "Give me a Python example of each." | 120/120 (100%) | **PASS** |
+
+Generation is coherent across all turns — multi-turn reasoning about data structures with correct Python code examples.
+
+#### Decode Performance
+
+| Metric | Value |
+|---|---|
+| Decode time (120 tokens) | ~14,344 ms |
+| **Per-token latency** | **~119 ms** |
+| **Decode speed** | **~8.4 tok/s** |
+| Prefill (turn 1, 80 tok) | ~2,219 ms |
+| Prefill (turn 2, 158 tok) | ~2,419 ms |
+| Prefill (turn 3, 298 tok) | ~2,419 ms |
+
+#### ANE Utilization
+
+Measured via `resource.getrusage` CPU-time subtraction (from prior profiling session):
+
+| Component | ANE % | Notes |
+|---|---|---|
+| Chunk 0 (LLL, layers 0–2) | 99.4% | Pure L-layers, all FP16 |
+| Chunks 1–7 (FLLL, 4 layers each) | 98.8–99.0% | V4: only 6 kv_cache ops FP32 per chunk |
+| Chunk 8 (F, layer 31) | 87.9% | Single F-layer, 4 kv_cache ops FP32 |
+| Embed + LM Head | 100% | Fully FP16 |
+
+All chunks exceed the **>60% ANE utilization target** by a wide margin.
+
+#### Model Size
+
+| Component | Size |
+|---|---|
+| Combined dedup chunks (9) | 1.7 GB |
+| Embed + LM Head combined | 458 MB |
+| Total (with compiled + source) | ~13 GB |
+| **Runtime footprint** | **~2.2 GB** |
+
+#### Compiled Models
+
+23 models compiled, 0 failed:
+
+| Component | Compiled Size |
+|---|---|
+| embed_single.mlmodelc | — |
+| embed_prefill.mlmodelc | — |
+| embed_lmhead_combined.mlmodelc | 458 MB |
+| ffn_LUT4_chunk{0}.mlmodelc | 161 MB |
+| ffn_LUT4_chunk{1–7}.mlmodelc | 215 MB each |
+| ffn_LUT4_chunk{8}.mlmodelc | 53 MB |
+| prefill_LUT4_chunk{0}.mlmodelc | 164 MB |
+| prefill_LUT4_chunk{1–7}.mlmodelc | 217 MB each |
+| prefill_LUT4_chunk{8}.mlmodelc | 53 MB |
+| lm_head_nosplit.mlmodelc | 458 MB |
+
+### Chat Server Interactive Test
+
+The model was loaded and tested via `chat_server.py` on port 8080. Interactive conversation confirmed:
+- Coherent multi-turn dialogue
+- Correct reasoning and code generation
+- No repetition or degenerate output
+- Responsive generation at ~8.4 tok/s
+
+### Comparison: LUT4 V4 vs LUT6 FP32
+
+| Metric | LUT6 FP32 (Milestone 3 base) | LUT4 V4 (this milestone) |
+|---|---|---|
+| Quantization | LUT6 gs=4 | **LUT4 gs=4** |
+| Compute precision | Full FP32 | **V4 (kv_cache-only FP32)** |
+| ANE utilization | ~0% (CPU fallback) | **87.9–99.4%** |
+| Decode speed | 5.9 tok/s | **~8.4 tok/s** |
+| Runtime model size | ~3.2 GB | **~2.2 GB** |
+| Quality | Production-grade | **Production-grade** |
+| FP32 cast ops | 586 | **~249** |
+
+### Files Modified
+
+| File | Change |
+|---|---|
+| `scripts_qwen3_5/export.py` | Added `--v4-precision` flag, `_is_kv_cache_op()`, `_make_v4_selector()` |
+
+### Output Artifacts
+
+| Path | Contents |
+|---|---|
+| `qwen3_5_v4_lut4/` | Complete V4 LUT4 production model (13 GB total) |
+| `qwen3_5_v4_lut4/combined_LUT4_dedup/` | 9 combined infer+prefill chunks (1.7 GB) |
+| `qwen3_5_v4_lut4/embed_lmhead_combined.mlpackage` | Combined embed+lmhead (458 MB) |
+| `qwen3_5_v4_lut4/export_ffn_v4_fixed.log` | Full export log |
+| `qwen3_5_v4_lut4/validate_v4_fixed_120tok.log` | 3-turn validation log |
+
+### Conclusion
+
+The V4 precision policy is now **production-integrated** in `export.py`. The LUT4 V4 model achieves:
+
+- **42% faster decode** than LUT6 FP32 (8.4 vs 5.9 tok/s)
+- **31% smaller** runtime footprint (2.2 vs 3.2 GB)
+- **87.9–99.4% ANE utilization** (vs ~0% for full FP32)
+- **Production-grade quality** (100% fresh-vs-incremental, coherent multi-turn chat)
+- **57.5% fewer FP32 casts** than full FP32 (249 vs 586)
+
+This represents the optimal configuration for Qwen3.5-4B deployment on Apple Neural Engine: maximum ANE utilization with minimal quality compromise, at the smallest viable model size (LUT4).

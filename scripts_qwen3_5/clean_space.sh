@@ -23,6 +23,6 @@ find /private/tmp -maxdepth 1 \( \
   -name '*.mlpackage' \
 \) -exec rm -rf {} \;
 
-rm -rf ~/Library/Caches/com.apple.python3
+sudo rm -rf ~/Library/Caches/com.apple.python3
 
-find /var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+find /var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T -mindepth 1 -maxdepth 1 -exec sudo rm -rf {} +

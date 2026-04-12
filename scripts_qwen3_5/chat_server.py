@@ -35,6 +35,7 @@ if _REPO_ROOT not in sys.path:
 sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 
 import gc, time, json, argparse, threading
+from collections import deque
 import numpy as np
 import coremltools as ct
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -169,7 +170,9 @@ async function checkStatus() {
     const r = await fetch('/api/status');
     const d = await r.json();
     document.getElementById('status').textContent =
-      d.ready ? `Ready | CTX=${d.ctx} | pos=${d.pos} (${d.cache_pct}%) | ${d.turns} turns` : 'Loading models...';
+      d.ready ? `Ready | CTX=${d.ctx} | pos=${d.pos}/${d.ctx} (${d.cache_pct}%)` +
+        (d.compactions > 0 ? ` | ${d.compactions} compactions` : '') +
+        ` | ${d.turns} turns` : 'Loading models...';
     document.getElementById('send').disabled = !d.ready;
     if (!d.ready) setTimeout(checkStatus, 2000);
   } catch(e) { setTimeout(checkStatus, 2000); }
@@ -484,7 +487,10 @@ class ChatEngine:
 
         # Conversation state
         self._init_messages()
-        self.pos = 0           # next write position in KV cache (0..ctx-1)
+        self.pos = 0           # physical write position in KV cache (0..ctx-1)
+        self.rope_offset = 0   # logical_pos = pos + rope_offset (for RoPE)
+        self.token_history = deque(maxlen=ctx * 2)  # tokens written to cache
+        self.compaction_count = 0
         self.states = None     # CoreML model states (KV cache)
         self.lin_convs = None  # linear conv states per chunk
         self.lin_recs = None   # linear recurrent states per chunk
@@ -597,6 +603,7 @@ class ChatEngine:
         self._mask_buf = np.full(
             (1, 1, 1, self.ctx), -65504.0, dtype=np.float16)
         self._pos_buf = np.zeros(1, dtype=np.int32)
+        self._rope_buf = np.zeros(1, dtype=np.int32)  # logical RoPE position
 
         # Pre-allocate batch prefill buffers
         self._batch_tok_buf = np.zeros((1, BATCH_SIZE), dtype=np.int32)
@@ -677,6 +684,20 @@ class ChatEngine:
             'linear_recurrent_state': self.per_chunk_rec_shapes[0],
         }
 
+        # Discover KV cache state names from model spec
+        self.kv_state_names = []
+        try:
+            spec = self.ffns[0].get_spec()
+            if hasattr(spec.description, 'state'):
+                for s in spec.description.state:
+                    if 'cache' in s.name.lower() or 'kv' in s.name.lower():
+                        self.kv_state_names.append(s.name)
+        except Exception:
+            pass
+        if not self.kv_state_names:
+            self.kv_state_names = ['k_cache', 'v_cache']  # fallback
+        print(f"    KV state names: {self.kv_state_names}")
+
     def _reset_states(self):
         """Reset KV cache, linear states, and position to zero."""
         self.states = [m.make_state() for m in self.ffns]
@@ -687,6 +708,77 @@ class ChatEngine:
             np.zeros(self.per_chunk_rec_shapes[ci], dtype=np.float16)
             for ci in range(self.num_chunks)]
         self.pos = 0
+        self.rope_offset = 0
+        self.token_history.clear()
+
+    def compact_cache(self):
+        """Discard left half of KV cache, keep right half via direct shift.
+
+        Uses MLState.read_state() / write_state() to directly read the
+        KV cache arrays, shift the right half to position 0, and write
+        back.  This is O(cache_size) memcpy — much faster than the
+        O(kept_tokens) sequential re-prefill alternative.
+
+        After compaction:
+          - Physical pos resets to keep_count (ctx // 2).
+          - rope_offset increases so logical positions (for RoPE) remain
+            monotonically increasing and correct.
+          - token_history is trimmed to just the kept tokens.
+          - Linear-attention states (conv/rec) are KEPT AS-IS.
+            They are recurrent summaries that accumulate all history,
+            so they still contain information from discarded tokens
+            (which is actually beneficial vs rebuild-from-scratch).
+
+        Returns True if compaction succeeded, False if nothing to compact.
+        """
+        keep_count = min(self.ctx // 2, self.pos, len(self.token_history))
+        if keep_count <= 0:
+            return False
+
+        old_logical = self.pos + self.rope_offset
+        old_physical = self.pos
+        discard_count = old_physical - keep_count
+        new_rope_offset = old_logical - keep_count
+
+        print(f"[compact] Shifting KV cache: keep {keep_count}/{old_physical} "
+              f"cached tokens, discard {discard_count}, "
+              f"logical={old_logical}, new_offset={new_rope_offset}")
+        t0 = time.time()
+
+        # Direct KV cache shift via read_state/write_state
+        for ci in range(self.num_chunks):
+            for sname in self.kv_state_names:
+                kv = self.states[ci].read_state(name=sname)
+                # KV shape: (..., state_length, head_dim) with seq_len at axis -2
+                # Standard layouts:
+                #   (layers, kv_heads, CTX, head_dim) — split k_cache/v_cache
+                #   (2*layers, kv_heads, CTX, head_dim) — combined kv_cache_0
+                #   (kv_heads, CTX, head_dim) — per-layer k_cache_i/v_cache_i
+                seq_axis = kv.ndim - 2  # always second-to-last
+                shifted = np.zeros_like(kv)
+                src = [slice(None)] * kv.ndim
+                dst = [slice(None)] * kv.ndim
+                src[seq_axis] = slice(discard_count, old_physical)
+                dst[seq_axis] = slice(0, keep_count)
+                shifted[tuple(dst)] = kv[tuple(src)]
+                self.states[ci].write_state(name=sname, value=shifted)
+
+        # Update position tracking
+        self.pos = keep_count
+        self.rope_offset = new_rope_offset
+
+        # Trim token history to just the kept tokens
+        kept_tokens = list(self.token_history)[-keep_count:]
+        self.token_history = deque(kept_tokens, maxlen=self.ctx * 2)
+        self.compaction_count += 1
+
+        elapsed = time.time() - t0
+        print(f"[compact] Done in {elapsed*1000:.0f}ms: "
+              f"physical {old_physical}->{self.pos}, "
+              f"freed {discard_count} slots, "
+              f"logical_pos={self.pos + self.rope_offset}, "
+              f"compactions={self.compaction_count}")
+        return True
 
     def _init_messages(self):
         """Initialize message list, optionally with system prompt."""
@@ -713,6 +805,9 @@ class ChatEngine:
 
         Updates KV cache / state but does not compute logits.
         Used for all prefill tokens except the last one.
+
+        pos is the physical KV-cache write index.  The logical RoPE
+        position is computed as ``pos + self.rope_offset``.
         """
         tok = self._tok_buf
         tok[0, 0] = tok_id
@@ -726,10 +821,13 @@ class ChatEngine:
         pos_arr = self._pos_buf
         pos_arr[0] = pos
 
+        rope_arr = self._rope_buf
+        rope_arr[0] = pos + self.rope_offset
+
         for ci in range(self.num_chunks):
             inp = {
                 "hidden_states": hidden.astype(np.float16),
-                "position_ids": pos_arr,
+                "position_ids": rope_arr,
                 "causal_mask": mask,
                 "current_pos": pos_arr,
                 "linear_conv_state": self.lin_convs[ci],
@@ -747,6 +845,9 @@ class ChatEngine:
 
         If lm_head outputs logits, returns raw logits as np.float32 array.
         If lm_head uses fused argmax, returns None for logits.
+
+        pos is the physical KV-cache write index.  The logical RoPE
+        position is computed as ``pos + self.rope_offset``.
         """
         tok = self._tok_buf
         tok[0, 0] = tok_id
@@ -760,10 +861,13 @@ class ChatEngine:
         pos_arr = self._pos_buf
         pos_arr[0] = pos
 
+        rope_arr = self._rope_buf
+        rope_arr[0] = pos + self.rope_offset
+
         for ci in range(self.num_chunks):
             inp = {
                 "hidden_states": hidden.astype(np.float16),
-                "position_ids": pos_arr,
+                "position_ids": rope_arr,
                 "causal_mask": mask,
                 "current_pos": pos_arr,
                 "linear_conv_state": self.lin_convs[ci],
@@ -814,7 +918,8 @@ class ChatEngine:
 
         pos_ids = self._batch_pos_buf
         pos_ids[:valid_len] = np.arange(
-            block_start, block_start + valid_len, dtype=np.int32)
+            block_start + self.rope_offset,
+            block_start + self.rope_offset + valid_len, dtype=np.int32)
         pos_ids[valid_len:] = 0  # padding positions — meaningless
 
         cur_pos = self._batch_cur_buf
@@ -982,7 +1087,7 @@ class ChatEngine:
         if n_remaining > 0:
             t0 = time.time()
             for ti, tok_id in enumerate(remaining):
-                if self.pos >= self.ctx - 1:
+                if self.pos >= self.ctx:
                     print(f"[prefill] OVERFLOW at pos={self.pos} "
                           f"during sequential prefill")
                     return None
@@ -1007,24 +1112,27 @@ class ChatEngine:
 
     # ── Cache overflow management ────────────────────────────────────
     #
-    # Overflow policy (deterministic):
+    # Overflow policy (layered):
     #   1. Before each turn, check: pos + prompt_len + MIN_GEN_RESERVE > ctx
     #   2. If no overflow, proceed with incremental continuation
-    #   3. If overflow:
-    #      a. Drop oldest user+assistant turn pairs from self.messages
-    #      b. Re-tokenize retained messages with apply_chat_template
-    #      c. Reset KV cache and all states (pos=0)
-    #      d. Return new prompt tokens for full re-prefill from scratch
+    #   3. If overflow, try strategies in order:
+    #      a. KV-cache compaction: discard left half, keep right half,
+    #         re-prefill from token_history.  FAST — no re-tokenization.
+    #      b. Message trimming: drop oldest turn pairs, re-tokenize,
+    #         full cache reset + re-prefill from scratch.  SLOWER.
     #   4. Always keep at least the current user message
     #   5. Chat continues seamlessly — user sees no disruption
 
     def _handle_overflow(self, prompt_tokens, enable_thinking):
         """Check cache space and handle overflow if needed.
 
+        Strategies (tried in order):
+          1. KV-cache compaction — discard left half, keep right half.
+             Fast: replays exact token IDs, no re-tokenization.
+          2. Message trimming — drop oldest turns, re-tokenize.
+             Slower but handles cases where compaction isn't enough.
+
         Returns: (prompt_tokens, did_overflow)
-          - If no overflow: returns original tokens, False
-          - If overflow: trims messages, resets cache, returns
-            re-tokenized prompt from apply_chat_template, True
         """
         space_needed = self.pos + len(prompt_tokens) + MIN_GEN_RESERVE
         if space_needed <= self.ctx:
@@ -1034,7 +1142,17 @@ class ChatEngine:
               f"{len(prompt_tokens)} + reserve={MIN_GEN_RESERVE} = "
               f"{space_needed} > ctx={self.ctx}")
 
-        # Try dropping oldest turn pairs until prompt fits
+        # Strategy 1: KV-cache compaction (fast, no re-tokenization)
+        keep_count = self.ctx // 2
+        freed = self.pos - keep_count
+        if (freed > 0
+                and keep_count + len(prompt_tokens) + MIN_GEN_RESERVE <= self.ctx):
+            self.compact_cache()
+            print(f"[cache] After compaction: pos={self.pos}, "
+                  f"space={self.ctx - self.pos - len(prompt_tokens)}")
+            return prompt_tokens, True
+
+        # Strategy 2: message trimming (slower, re-tokenizes)
         retained = list(self.messages)
         # Preserve system message (index 0) when trimming
         sys_msg = retained[0] if retained and retained[0]["role"] == "system" else None
@@ -1165,6 +1283,8 @@ class ChatEngine:
                 yield {"type": "error",
                        "message": "Context overflow during prefill."}
                 return
+            # Record prompt tokens in history (for future compaction)
+            self.token_history.extend(prompt_tokens)
 
             # ── DECODE PHASE ──
             rep_detector = RepetitionDetector() if repetition_guard else None
@@ -1195,10 +1315,14 @@ class ChatEngine:
                       f"pres={presence_penalty}, freq={frequency_penalty}")
             stopped_by_rep = False
             for gi in range(max_tokens - 1):
-                if self.pos >= self.ctx - 1:
-                    break
-                next_id, logits = self._step(generated_ids[-1], self.pos)
+                if self.pos >= self.ctx:
+                    # KV cache full — try mid-decode compaction
+                    if not self.compact_cache():
+                        break
+                fed_tok = generated_ids[-1]
+                next_id, logits = self._step(fed_tok, self.pos)
                 self.pos += 1
+                self.token_history.append(fed_tok)
                 if logits is not None and has_penalties:
                     # Suppress <think> and </think> tokens when thinking is OFF
                     if not enable_thinking:
@@ -1299,6 +1423,9 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "ready": engine.ready,
                 "ctx": engine.ctx,
                 "pos": engine.pos,
+                "logical_pos": engine.pos + engine.rope_offset,
+                "rope_offset": engine.rope_offset,
+                "compactions": engine.compaction_count,
                 "turns": len(engine.messages) // 2,
                 "cache_pct": (engine.pos * 100 // engine.ctx
                               if engine.ctx else 0),

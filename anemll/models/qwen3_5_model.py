@@ -191,7 +191,15 @@ def _layer_index_from_key(key: str) -> int | None:
 
 
 class Qwen35RMSNorm(nn.Module):
-    """ANE-friendly RMSNorm with Qwen3.5 offset scaling semantics."""
+    """ANE-friendly RMSNorm with Qwen3.5 offset scaling semantics.
+
+    Uses direct rsqrt(mean(x²) + eps) instead of the doubled-concat
+    F.layer_norm(2H) trick.  The doubled-concat approach forces
+    layer_norm on 2× the hidden dimension, which exceeds ANE's native
+    layer_norm limit and pushes all norms to CPU (+10% ANE, 28% faster).
+
+    Accuracy: cos ≥ 0.99974 vs doubled-concat on Qwen3.5-4B.
+    """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
@@ -201,22 +209,17 @@ class Qwen35RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        x = hidden_states
-        doubled = torch.cat([x, -x], dim=-1)
-        normed = F.layer_norm(
-            doubled,
-            normalized_shape=(2 * self.hidden_size,),
-            weight=None,
-            bias=None,
-            eps=float(self.eps),
-        )
-        normed = normed[..., : self.hidden_size]
+        variance = (hidden_states * hidden_states).mean(-1, keepdim=True)
+        normed = hidden_states * torch.rsqrt(variance + self.eps)
         scale = 1.0 + self.weight.to(normed.dtype, copy=False).to(normed.device, copy=False)
         return normed * scale
 
 
 class Qwen35RMSNormGated(nn.Module):
-    """RMSNorm + SiLU gate used by Qwen3.5 linear attention."""
+    """RMSNorm + SiLU gate used by Qwen3.5 linear attention.
+
+    Uses direct rsqrt(mean(x²) + eps) — see Qwen35RMSNorm docstring.
+    """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
         super().__init__()
@@ -225,18 +228,8 @@ class Qwen35RMSNormGated(nn.Module):
         self.eps = eps
 
     def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
-        # ANE-oriented RMSNorm via doubled LayerNorm trick:
-        # concat([x, -x]) -> zero mean, LayerNorm variance equals mean(x^2).
-        x = hidden_states
-        doubled = torch.cat([x, -x], dim=-1)
-        normed = F.layer_norm(
-            doubled,
-            normalized_shape=(2 * self.hidden_size,),
-            weight=None,
-            bias=None,
-            eps=float(self.eps),
-        )
-        normed = normed[..., : self.hidden_size]
+        variance = (hidden_states * hidden_states).mean(-1, keepdim=True)
+        normed = hidden_states * torch.rsqrt(variance + self.eps)
         out = normed * self.weight.to(hidden_states.dtype)
         out = out * F.silu(gate.to(hidden_states.dtype))
         return out
@@ -1588,7 +1581,10 @@ class Qwen35Model(nn.Module):
         x = layer.input_layernorm(hidden_states)
         seq_len = hidden_states.shape[1]
         if seq_len == 1:
-            query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
+            # Use position_ids (logical position with rope offset) for RoPE,
+            # not current_pos (physical cache position).  current_pos is still
+            # used below for the KV-cache write position.
+            query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, position_ids)
         else:
             query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache_prefill(x, position_ids)
 
@@ -1667,7 +1663,10 @@ class Qwen35Model(nn.Module):
             return hidden_states + layer.mlp(post)
 
         x = layer.input_layernorm(hidden_states)
-        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
+        # Use position_ids (logical position with rope offset) for RoPE,
+        # not current_pos (physical cache position).  current_pos is still
+        # used below for the KV-cache write position.
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, position_ids)
         key_idx = layer_idx
         value_idx = layer_idx + self.config.num_hidden_layers
 
@@ -1768,7 +1767,10 @@ class Qwen35Model(nn.Module):
             return hidden_states + layer.mlp(post)
 
         x = layer.input_layernorm(hidden_states)
-        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, current_pos)
+        # Use position_ids (logical position with rope offset) for RoPE,
+        # not current_pos (physical cache position).  current_pos is still
+        # used below for the KV-cache write position.
+        query_states, key_states, value_states, gate = layer.self_attn.get_new_kv_cache(x, position_ids)
         # Tensor-value slice: current_pos[0] → aten::select → stays dynamic on ANE.
         # No RangeDim needed. For decode at pos p: current_pos=[p], pos=p, write at pos:pos+1.
         pos = current_pos[0]

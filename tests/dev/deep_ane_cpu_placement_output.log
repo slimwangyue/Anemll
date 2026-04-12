@@ -1,0 +1,1029 @@
+
+==============================================================================
+  DEEP ANE vs CPU PLACEMENT INVESTIGATION — Qwen3.5-4B
+==============================================================================
+  Model dir:   /Volumes/MySSD/Anemll/qwen3_5_stable_lut4ffn_lut6em_fp32
+  Combined:    /Volumes/MySSD/Anemll/qwen3_5_stable_lut4ffn_lut6em_fp32/combined_LUT4_dedup
+  Chunks:      [0, 1, 2, 3, 4, 5, 6, 7, 8]
+  CTX=2048  BATCH_SIZE=512  NUM_CHUNKS=9
+  Skip phases: none
+  Chunk ranges: [(0, 3), (3, 7), (7, 11), (11, 15), (15, 19), (19, 23), (23, 27), (27, 31), (31, 32)]
+  Measurement: decode=3w+20r  prefill=2w+5r
+
+==============================================================================
+  PHASE 1A: Per-Chunk DECODE — wall time vs CPU process time
+==============================================================================
+
+  ── CPU_ONLY ──
+    chunk 0 … [0-2] load=2.0s  wall=14.95  cpu=14.99  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 1 … [3-6] load=2.5s  wall=24.98  cpu=30.81  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 2 … [7-10] load=2.4s  wall=24.95  cpu=30.77  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 3 … [11-14] load=2.4s  wall=24.94  cpu=30.78  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 4 … [15-18] load=2.4s  wall=25.00  cpu=30.83  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 5 … [19-22] load=2.4s  wall=24.95  cpu=30.76  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 6 … [23-26] load=2.5s  wall=25.00  cpu=30.68  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 7 … [27-30] load=2.4s  wall=24.90  cpu=30.62  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 8 … [31-31] load=0.4s  wall=8.59  cpu=11.21  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+
+  ── CPU_AND_NE ──
+    chunk 0 … [0-2] load=4.3s  wall=9.38  cpu=3.68  ane_est=5.70  cpu%=39%  ane%=61%  vctx=0
+    chunk 1 … [3-6] load=5.4s  wall=15.85  cpu=16.60  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 2 … [7-10] load=5.4s  wall=16.27  cpu=16.35  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 3 … [11-14] load=5.4s  wall=15.75  cpu=16.47  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 4 … [15-18] load=5.4s  wall=16.28  cpu=16.53  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 5 … [19-22] load=5.4s  wall=15.77  cpu=16.50  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 6 … [23-26] load=5.4s  wall=16.20  cpu=16.21  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 7 … [27-30] load=5.4s  wall=15.87  cpu=16.56  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+    chunk 8 … [31-31] load=1.0s  wall=6.70  cpu=8.19  ane_est=0.00  cpu%=100%  ane%=0%  vctx=0
+
+==============================================================================
+  DECODE UTILISATION TABLE
+==============================================================================
+  Chk Layers │      CPU_ONLY      │  ── CPU_AND_NE ──────────────────────  │ SPEED
+             │    wall     cpu  cpu%│    wall     cpu     ane  cpu%  ane%  vctx│      
+  ─── ────── ┼────────────────────┼────────────────────────────────────────┼──────
+    0    0-2 │   14.95   14.99 100% │    9.38    3.68    5.70  39%   61%     0 │ 1.59x
+    1    3-6 │   24.98   30.81 100% │   15.85   16.60    0.00 100%    0%     0 │ 1.58x
+    2   7-10 │   24.95   30.77 100% │   16.27   16.35    0.00 100%    0%     0 │ 1.53x
+    3  11-14 │   24.94   30.78 100% │   15.75   16.47    0.00 100%    0%     0 │ 1.58x
+    4  15-18 │   25.00   30.83 100% │   16.28   16.53    0.00 100%    0%     0 │ 1.54x
+    5  19-22 │   24.95   30.76 100% │   15.77   16.50    0.00 100%    0%     0 │ 1.58x
+    6  23-26 │   25.00   30.68 100% │   16.20   16.21    0.00 100%    0%     0 │ 1.54x
+    7  27-30 │   24.90   30.62 100% │   15.87   16.56    0.00 100%    0%     0 │ 1.57x
+    8  31-31 │    8.59   11.21 100% │    6.70    8.19    0.00 100%    0%     0 │ 1.28x
+
+==============================================================================
+  PHASE 1B: Per-Chunk PREFILL — wall time vs CPU process time
+==============================================================================
+  Combined model functions: ['infer', 'prefill']
+  Using combined prefill
+
+  ── Prefill CPU_ONLY ──
+    chunk 0 … [0-2] load=2.5s  wall=111.3  cpu=208.2  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 1 … [3-6] load=3.1s  wall=157.6  cpu=297.8  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 2 … [7-10] load=3.1s  wall=156.7  cpu=299.5  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 3 … [11-14] load=3.1s  wall=156.2  cpu=294.1  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 4 … [15-18] load=3.0s  wall=156.4  cpu=298.2  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 5 … [19-22] load=3.0s  wall=157.1  cpu=297.1  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 6 … [23-26] load=3.0s  wall=156.6  cpu=299.3  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 7 … [27-30] load=3.0s  wall=155.2  cpu=299.3  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+    chunk 8 … [31-31] load=0.4s  wall=45.0  cpu=87.4  ane_est=0.0  cpu%=100%  ane%=0%  vctx=0
+
+  ── Prefill CPU_AND_NE ──
+    chunk 0 … [0-2] load=10.3s  wall=136.8  cpu=54.9  ane_est=82.0  cpu%=40%  ane%=60%  vctx=0
+    chunk 1 … [3-6] load=11.8s  wall=188.4  cpu=102.2  ane_est=86.2  cpu%=54%  ane%=46%  vctx=0
+    chunk 2 … [7-10] load=11.8s  wall=187.5  cpu=100.3  ane_est=87.2  cpu%=54%  ane%=46%  vctx=0
+    chunk 3 … [11-14] load=11.8s  wall=187.5  cpu=101.5  ane_est=86.0  cpu%=54%  ane%=46%  vctx=0
+    chunk 4 … [15-18] load=11.8s  wall=188.0  cpu=103.0  ane_est=85.0  cpu%=55%  ane%=45%  vctx=0
+    chunk 5 … [19-22] load=11.8s  wall=189.2  cpu=104.0  ane_est=85.1  cpu%=55%  ane%=45%  vctx=0
+    chunk 6 … [23-26] load=11.8s  wall=186.5  cpu=98.7  ane_est=87.8  cpu%=53%  ane%=47%  vctx=0
+    chunk 7 … [27-30] load=11.8s  wall=186.7  cpu=99.2  ane_est=87.5  cpu%=53%  ane%=47%  vctx=0
+    chunk 8 … [31-31] load=1.3s  wall=50.5  cpu=47.2  ane_est=3.3  cpu%=93%  ane%=7%  vctx=0
+
+==============================================================================
+  PREFILL UTILISATION TABLE
+==============================================================================
+  Chk Layers │      CPU_ONLY      │  ── CPU_AND_NE ──────────────────────  │ SPEED
+             │    wall     cpu  cpu%│    wall     cpu     ane  cpu%  ane%  vctx│      
+  ─── ────── ┼────────────────────┼────────────────────────────────────────┼──────
+    0    0-2 │   111.3   208.2 100% │   136.8    54.9    82.0  40%   60%     0 │ 0.81x
+    1    3-6 │   157.6   297.8 100% │   188.4   102.2    86.2  54%   46%     0 │ 0.84x
+    2   7-10 │   156.7   299.5 100% │   187.5   100.3    87.2  54%   46%     0 │ 0.84x
+    3  11-14 │   156.2   294.1 100% │   187.5   101.5    86.0  54%   46%     0 │ 0.83x
+    4  15-18 │   156.4   298.2 100% │   188.0   103.0    85.0  55%   45%     0 │ 0.83x
+    5  19-22 │   157.1   297.1 100% │   189.2   104.0    85.1  55%   45%     0 │ 0.83x
+    6  23-26 │   156.6   299.3 100% │   186.5    98.7    87.8  53%   47%     0 │ 0.84x
+    7  27-30 │   155.2   299.3 100% │   186.7    99.2    87.5  53%   47%     0 │ 0.83x
+    8  31-31 │    45.0    87.4 100% │    50.5    47.2     3.3  93%    7%     0 │ 0.89x
+
+==============================================================================
+  PHASE 1C: Embed & LMHead Utilisation
+==============================================================================
+  embed            CPU_ONLY    : wall=    0.03  cpu=    0.05  ane_est=   0.00  cpu%=100%  vctx=0
+  embed            CPU_AND_NE  : wall=    0.03  cpu=    0.05  ane_est=   0.00  cpu%=100%  vctx=0
+  lmhead           CPU_ONLY    : wall=   25.48  cpu=   25.52  ane_est=   0.00  cpu%=100%  vctx=0
+  lmhead           CPU_AND_NE  : wall=    5.16  cpu=    0.78  ane_est=   4.38  cpu%=15%  vctx=0
+  embed_prefill    CPU_ONLY    : wall=    2.42  cpu=    2.45  ane_est=   0.00  cpu%=100%  vctx=0
+  embed_prefill    CPU_AND_NE  : wall=    2.44  cpu=    2.47  ane_est=   0.00  cpu%=100%  vctx=0
+
+==============================================================================
+  PHASE 2: Static MIL Op Inventory Per Chunk
+==============================================================================
+
+  ── Chunk 0 [layers 0-2] ──
+
+    Function: infer
+      Total ops: 1087  (weight: 658, runtime: 429)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   27   6.3%  ANE-friendly compute
+      elementwise             105  24.5%  
+      activation               15   3.5%  
+      normalization             9   2.1%  may fall back to CPU
+      cast                     48  11.2%  dirs: {'→fp16': 48}
+      data_movement           204  47.6%  
+      reduction                12   2.8%  
+      other                     9   2.1%  
+      Output dtypes: fp16:427, dt23:2
+      Top runtime ops: mul:60, transpose:57, cast:48, slice_by_index:36, reshape:36, expand_dims:27, conv:27, squeeze:24, add:18, concat:12, reduce_sum:12, layer_norm:9
+
+    Function: prefill
+      Total ops: 10288  (weight: 6664, runtime: 3624)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  285   7.9%  ANE-friendly compute
+      elementwise             892  24.6%  
+      activation               15   0.4%  
+      normalization             9   0.2%  may fall back to CPU
+      cast                     51   1.4%  dirs: {'→fp16': 51}
+      data_movement          2265  62.5%  
+      gather_scatter            1   0.0%  ◄ ANE-hostile (RoPE / scatter)
+      reduction                99   2.7%  
+      comparison                1   0.0%  ◄ ANE-hostile (logical)
+      other                     6   0.2%  
+      Output dtypes: fp16:3618, dt23:5, fp32:1
+      Top runtime ops: slice_by_index:1456, expand_dims:446, mul:414, matmul:258, concat:210, add:208, exp:153, reduce_sum:99, sub:99, transpose:60, reshape:57, cast:51
+      ANE-hostile detail: {'one_hot': 1, 'less': 1}
+
+  ── Chunk 1 [layers 3-6] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 2 [layers 7-10] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 3 [layers 11-14] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 4 [layers 15-18] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 5 [layers 19-22] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 6 [layers 23-26] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 7 [layers 27-30] ──
+
+    Function: infer
+      Total ops: 1441  (weight: 878, runtime: 563)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   36   6.4%  ANE-friendly compute
+      elementwise             130  23.1%  
+      activation               18   3.2%  
+      normalization            13   2.3%  may fall back to CPU
+      cast                     73  13.0%  dirs: {'→fp16': 73}
+      data_movement           258  45.8%  
+      gather_scatter            2   0.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.7%  {'read_state': 4}
+      reduction                12   2.1%  
+      comparison                4   0.7%  ◄ ANE-hostile (logical)
+      other                    13   2.3%  
+      Output dtypes: fp16:550, dt23:9, fp32:2
+      Top runtime ops: mul:77, cast:73, transpose:68, slice_by_index:53, reshape:43, expand_dims:34, conv:34, squeeze:27, add:26, concat:22, layer_norm:13, reduce_sum:12
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 10642  (weight: 6884, runtime: 3758)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                  294   7.8%  ANE-friendly compute
+      elementwise             917  24.4%  
+      activation               18   0.5%  
+      normalization            13   0.3%  may fall back to CPU
+      cast                     76   2.0%  dirs: {'→fp16': 76}
+      data_movement          2319  61.7%  
+      gather_scatter            3   0.1%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   0.1%  {'read_state': 4}
+      reduction                99   2.6%  
+      comparison                5   0.1%  ◄ ANE-hostile (logical)
+      other                    10   0.3%  
+      Output dtypes: fp16:3741, dt23:12, fp32:3
+      Top runtime ops: slice_by_index:1473, expand_dims:453, mul:431, matmul:260, concat:220, add:216, exp:153, reduce_sum:99, sub:99, cast:76, transpose:71, reshape:64
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'one_hot': 1, 'less': 1}
+
+  ── Chunk 8 [layers 31-31] ──
+
+    Function: infer
+      Total ops: 369  (weight: 225, runtime: 144)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                    9   6.2%  ANE-friendly compute
+      elementwise              27  18.8%  
+      activation                3   2.1%  
+      normalization             5   3.5%  may fall back to CPU
+      cast                     27  18.8%  dirs: {'→fp16': 27}
+      data_movement            59  41.0%  
+      gather_scatter            2   1.4%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   2.8%  {'read_state': 4}
+      comparison                4   2.8%  ◄ ANE-hostile (logical)
+      other                     4   2.8%  
+      Output dtypes: fp16:131, dt23:9, fp32:2
+      Top runtime ops: cast:27, mul:19, slice_by_index:16, concat:11, transpose:11, add:8, expand_dims:7, conv:7, reshape:7, layer_norm:5, read_state:4, squeeze:3
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2}
+
+    Function: prefill
+      Total ops: 382  (weight: 232, runtime: 150)
+      Category              Count    %RT  Notes
+      ────────────────────  ─────  ─────  ────────────────────────────
+      matmul                   10   6.7%  ANE-friendly compute
+      elementwise              28  18.7%  
+      activation                3   2.0%  
+      normalization             5   3.3%  may fall back to CPU
+      cast                     29  19.3%  dirs: {'→fp16': 29}
+      data_movement            60  40.0%  
+      gather_scatter            2   1.3%  ◄ ANE-hostile (RoPE / scatter)
+      state                     4   2.7%  {'read_state': 4}
+      comparison                5   3.3%  ◄ ANE-hostile (logical)
+      other                     4   2.7%  
+      Output dtypes: fp16:135, dt23:10, fp32:3
+      Top runtime ops: cast:29, mul:19, slice_by_index:16, concat:11, transpose:11, reshape:8, add:8, expand_dims:7, conv:7, layer_norm:5, read_state:4, squeeze:3
+      ANE-hostile detail: {'greater_equal': 2, 'select': 2, 'gather': 2, 'equal': 1}
+
+==============================================================================
+  STATE VARIABLE INVENTORY (per chunk)
+==============================================================================
+  Chunk 0 [0-2]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 1 [3-6]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 2 [7-10]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 3 [11-14]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 4 [15-18]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 5 [19-22]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 6 [23-26]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 7 [27-30]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+  Chunk 8 [31-31]: 2 states, 0.0 MB total
+    k_cache                                   ()                      ?      0 KB
+    v_cache                                   ()                      ?      0 KB
+
+==============================================================================
+  PHASE 3A: Decode — CPU vs ANE Placement Inference
+==============================================================================
+
+  ── Chunk 0 [layers 0-2]  ANE-DOMINANT ──
+  wall: CPU_ONLY 14.95ms → ANE 9.38ms  (1.59x)
+  On ANE path: cpu_time=3.68ms  ane_est=5.70ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (34% of runtime ops):
+    matmul/conv:       27 ops (6.3%)  — Q/K/V projections, FFN dense layers
+    elementwise:      105 ops (24.5%)  — add, mul, pointwise arithmetic
+    activation:        15 ops (3.5%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          0 ops (0.0%)  — KV cache reads/writes (CPU memory)
+    casts:             48 ops (11.2%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        0 ops (0.0%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:      9 ops (2.1%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    204 ops (47.6%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 3.68ms = 39% of 9.38ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 5.70ms = 61% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 1 [layers 3-6]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 24.98ms → ANE 15.85ms  (1.58x)
+  On ANE path: cpu_time=16.60ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.60ms = 100% of 15.85ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 2 [layers 7-10]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 24.95ms → ANE 16.27ms  (1.53x)
+  On ANE path: cpu_time=16.35ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.35ms = 100% of 16.27ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 3 [layers 11-14]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 24.94ms → ANE 15.75ms  (1.58x)
+  On ANE path: cpu_time=16.47ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.47ms = 100% of 15.75ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 4 [layers 15-18]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 25.00ms → ANE 16.28ms  (1.54x)
+  On ANE path: cpu_time=16.53ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.53ms = 100% of 16.28ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 5 [layers 19-22]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 24.95ms → ANE 15.77ms  (1.58x)
+  On ANE path: cpu_time=16.50ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.50ms = 100% of 15.77ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 6 [layers 23-26]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 25.00ms → ANE 16.20ms  (1.54x)
+  On ANE path: cpu_time=16.21ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.21ms = 100% of 16.20ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 7 [layers 27-30]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 24.90ms → ANE 15.87ms  (1.57x)
+  On ANE path: cpu_time=16.56ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (33% of runtime ops):
+    matmul/conv:       36 ops (6.4%)  — Q/K/V projections, FFN dense layers
+    elementwise:      130 ops (23.1%)  — add, mul, pointwise arithmetic
+    activation:        18 ops (3.2%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (0.7%)  — KV cache reads/writes (CPU memory)
+    casts:             73 ops (13.0%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (1.1%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:     13 ops (2.3%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:    258 ops (45.8%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 16.56ms = 100% of 15.87ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+  ── Chunk 8 [layers 31-31]  MIXED (minor ANE) ──
+  wall: CPU_ONLY 8.59ms → ANE 6.70ms  (1.28x)
+  On ANE path: cpu_time=8.19ms  ane_est=0.00ms  vol_ctx=0
+  CPU_ONLY cpu_frac=1.00:  mostly single-threaded CPU execution
+
+  Likely on ANE (27% of runtime ops):
+    matmul/conv:        9 ops (6.2%)  — Q/K/V projections, FFN dense layers
+    elementwise:       27 ops (18.8%)  — add, mul, pointwise arithmetic
+    activation:         3 ops (2.1%)  — silu, softmax
+
+  Likely on CPU:
+    state I/O:          4 ops (2.8%)  — KV cache reads/writes (CPU memory)
+    casts:             27 ops (18.8%)  — dtype boundaries, state I/O boundaries
+    ANE-hostile:        6 ops (4.2%)  — gather (RoPE), scatter
+
+  Mixed / uncertain:
+    normalization:      5 ops (3.5%)  — layer_norm (ANE on recent HW, CPU on older)
+    data movement:     59 ops (41.0%)  — reshape/concat (often zero-cost in MIL)
+
+  WHY this placement:
+    CPU-side work = 8.19ms = 100% of 6.70ms wall
+    Includes: state I/O + casts + hostile ops + data transfers + CoreML dispatch
+    ANE-side  = 0.00ms = 0% of wall
+    Includes: matmul + elementwise + activations (fused fp16 kernels)
+
+==============================================================================
+  PHASE 3B: Prefill — CPU vs ANE Placement Inference
+==============================================================================
+
+  ── Chunk 0 [layers 0-2] PREFILL ──
+  wall: CPU_ONLY 111.3ms → ANE 136.8ms  (0.81x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.40,  ane_est=82.0ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.81x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.40  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 1 [layers 3-6] PREFILL ──
+  wall: CPU_ONLY 157.6ms → ANE 188.4ms  (0.84x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.54,  ane_est=86.2ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.84x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.54  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 2 [layers 7-10] PREFILL ──
+  wall: CPU_ONLY 156.7ms → ANE 187.5ms  (0.84x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.54,  ane_est=87.2ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.84x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.54  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 3 [layers 11-14] PREFILL ──
+  wall: CPU_ONLY 156.2ms → ANE 187.5ms  (0.83x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.54,  ane_est=86.0ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.83x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.54  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 4 [layers 15-18] PREFILL ──
+  wall: CPU_ONLY 156.4ms → ANE 188.0ms  (0.83x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.55,  ane_est=85.0ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.83x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.55  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 5 [layers 19-22] PREFILL ──
+  wall: CPU_ONLY 157.1ms → ANE 189.2ms  (0.83x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.55,  ane_est=85.1ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.83x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.55  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 6 [layers 23-26] PREFILL ──
+  wall: CPU_ONLY 156.6ms → ANE 186.5ms  (0.84x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.53,  ane_est=87.8ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.84x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.53  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 7 [layers 27-30] PREFILL ──
+  wall: CPU_ONLY 155.2ms → ANE 186.7ms  (0.83x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.53,  ane_est=87.5ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.83x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.53  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+  ── Chunk 8 [layers 31-31] PREFILL ──
+  wall: CPU_ONLY 45.0ms → ANE 50.5ms  (0.89x)
+  CPU_ONLY  cpu_frac=1.00  (single-threaded)
+  CPU_AND_NE cpu_frac=0.93,  ane_est=3.3ms  vctx=0
+
+  ⚠ PREFILL IS SLOWER ON ANE (0.89x)
+    Root cause: large batch (seq=512) benefits from multi-core CPU
+    CPU_ONLY parallelism: 1.00x  (Accelerate/vDSP multi-core)
+    ANE path cpu_frac: 0.93  (CPU still busy with transfers + state)
+    Per-chunk data: 2560 KB  (×2 for in+out = 5120 KB transfers)
+
+==============================================================================
+  PHASE 3C: Embed / LMHead Placement
+==============================================================================
+  embed           : CPU=0.03ms  ANE=0.03ms  speedup=1.01x  ane_frac=0%
+  lmhead          : CPU=25.48ms  ANE=5.16ms  speedup=4.94x  ane_frac=85%
+  embed_prefill   : CPU=2.42ms  ANE=2.44ms  speedup=0.99x  ane_frac=0%
+
+==============================================================================
+  PHASE 4: Controlled Ablation Experiments
+==============================================================================
+
+  ── 4A: 4-way compute unit comparison (decode) ──
+
+    Chunk 0 [0-2]:
+      CPU_ONLY       :  wall=   14.92  cpu=   14.95  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_NE     :  wall=    7.49  cpu=    3.55  ane_est=   3.95  cpu%=47%  vctx=0
+      CPU_AND_GPU    :  wall=   10.82  cpu=    3.24  ane_est=   7.58  cpu%=30%  vctx=0
+      ALL            :  wall=   10.78  cpu=    3.20  ane_est=   7.58  cpu%=30%  vctx=0
+
+    Chunk 1 [3-6]:
+      CPU_ONLY       :  wall=   24.97  cpu=   30.17  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_NE     :  wall=   15.79  cpu=   16.55  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_GPU    :  wall=   16.57  cpu=    4.72  ane_est=  11.86  cpu%=28%  vctx=0
+      ALL            :  wall=   16.56  cpu=    4.47  ane_est=  12.08  cpu%=27%  vctx=0
+
+    Chunk 4 [15-18]:
+      CPU_ONLY       :  wall=   24.96  cpu=   30.14  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_NE     :  wall=   15.84  cpu=   16.59  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_GPU    :  wall=   16.50  cpu=    4.47  ane_est=  12.04  cpu%=27%  vctx=0
+      ALL            :  wall=   16.57  cpu=    4.60  ane_est=  11.97  cpu%=28%  vctx=0
+
+    Chunk 8 [31-31]:
+      CPU_ONLY       :  wall=    8.75  cpu=   11.36  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_NE     :  wall=    6.71  cpu=    8.11  ane_est=   0.00  cpu%=100%  vctx=0
+      CPU_AND_GPU    :  wall=    5.17  cpu=    1.62  ane_est=   3.55  cpu%=31%  vctx=0
+      ALL            :  wall=    4.35  cpu=    1.45  ane_est=   2.90  cpu%=33%  vctx=0
+
+    Hardware contribution analysis:
+      Chunk 0:  ANE saves +49.8%,  GPU saves +27.5%,  ALL saves +27.7%
+      Chunk 1:  ANE saves +36.8%,  GPU saves +33.6%,  ALL saves +33.7%
+      Chunk 4:  ANE saves +36.5%,  GPU saves +33.9%,  ALL saves +33.6%
+      Chunk 8:  ANE saves +23.3%,  GPU saves +40.9%,  ALL saves +50.3%
+
+==============================================================================
+  PHASE 4B: State Overhead Isolation
+==============================================================================
+
+  Chunk 1 [3-6]: 2 states, 64.0 MB
+    k_cache                                   shape=(4, 4, 2048, 256)     dtype=float32  32768 KB
+    v_cache                                   shape=(4, 4, 2048, 256)     dtype=float32  32768 KB
+  Read  all: wall=5.21ms  cpu=5.21ms
+  Write all: wall=4.32ms  cpu=4.32ms
+  R+W total: 9.53ms  = 60.1% of chunk decode (15.85ms)
+
+  Chunk 4 [15-18]: 2 states, 64.0 MB
+    k_cache                                   shape=(4, 4, 2048, 256)     dtype=float32  32768 KB
+    v_cache                                   shape=(4, 4, 2048, 256)     dtype=float32  32768 KB
+  Read  all: wall=5.22ms  cpu=5.22ms
+  Write all: wall=4.30ms  cpu=4.30ms
+  R+W total: 9.52ms  = 58.5% of chunk decode (16.28ms)
+
+==============================================================================
+  PHASE 4C: Prefill 4-way CU (representative chunks)
+==============================================================================
+
+  Prefill Chunk 1 [3-6]:
+    CPU_ONLY       :  wall=   157.7  cpu=   294.8  ane_est=    0.0  cpu%=100%  vctx=0
+    CPU_AND_NE     :  wall=   188.5  cpu=   102.4  ane_est=   86.1  cpu%=54%  vctx=0
+    CPU_AND_GPU    :  wall=    68.6  cpu=    17.1  ane_est=   51.5  cpu%=25%  vctx=0
+    ALL            :  wall=   154.6  cpu=    35.5  ane_est=  119.1  cpu%=23%  vctx=0
+
+  Prefill Chunk 4 [15-18]:
+    CPU_ONLY       :  wall=   156.0  cpu=   293.2  ane_est=    0.0  cpu%=100%  vctx=0
+    CPU_AND_NE     :  wall=   186.3  cpu=    97.7  ane_est=   88.6  cpu%=52%  vctx=0
+    CPU_AND_GPU    :  wall=    68.4  cpu=    16.8  ane_est=   51.7  cpu%=24%  vctx=0
+    ALL            :  wall=   156.0  cpu=    36.3  ane_est=  119.7  cpu%=23%  vctx=0
+
+==============================================================================
+  PHASE 5: ROOT-CAUSE EXPLANATION
+==============================================================================
+
+  ═══════════════════════════════════════════════════════════
+  DECODE — Why is a decode chunk partly on CPU?
+  ═══════════════════════════════════════════════════════════
+
+  Average decode chunk: 93% CPU-time,  7% ANE-time (wall basis)
+
+  WHAT IS ON ANE  (≈7% of wall time):
+    • Dense matmul / conv ops (Q/K/V projections, FFN up/gate/down)
+    • Elementwise arithmetic (add, mul, silu activation)
+    • Softmax (fused into ANE attention subgraph)
+    • fp16 compute kernels compiled by CoreML's NE compiler
+    Evidence:
+      – Wall-time speedup >1x over CPU_ONLY confirms ANE acceleration
+      – Voluntary context switches confirm CPU yields to ANE hardware
+      – cpu_ms < wall_ms proves CPU is idle while ANE computes
+
+  WHAT IS ON CPU  (≈93% of wall time):
+    1. State I/O:  ~4 state ops/chunk
+       – KV cache + linear-attention conv/recurrent states live in CPU memory
+       – Every predict() call requires read-state → ANE compute → write-state
+       – These are ALWAYS on CPU (CoreML state contract)
+    2. Data casts:  ~65 cast ops/chunk
+       – fp32↔fp16 boundaries at model input/output and state interfaces
+       – Each cast is a CPU memcopy with dtype conversion
+    3. ANE-hostile ops:  ~5 ops/chunk
+       – gather / gather_along_axis (RoPE cos/sin lookup)
+       – These force CoreML to create CPU-fallback subgraph partitions
+       – Each partition boundary = CPU↔ANE data transfer
+    4. Normalization:  ~12 layer_norm ops/chunk
+       – May run on ANE (Apple Silicon M-series) or CPU (older HW)
+       – Even on ANE, requires separate kernel launch
+    5. CoreML runtime overhead:
+       – Dispatch scheduling, graph partitioning, memory allocation
+       – Overhead per predict() call, independent of model size
+
+  WHY this pattern:
+    • CoreML compiler splits the MIL graph into ANE-eligible and CPU-fallback
+      subgraphs based on op support and data dependencies.
+    • Gather ops (for RoPE) break ANE subgraph continuity, creating
+      partition boundaries.  More partitions = more CPU↔ANE transfers.
+    • State ops are inherently CPU (DMA to/from shared memory).
+    • The hybrid attention+Mamba architecture uses more state than pure
+      Transformer, increasing CPU-side overhead.
+
+  ═══════════════════════════════════════════════════════════
+  PREFILL — Why may prefill be SLOWER on ANE?
+  ═══════════════════════════════════════════════════════════
+
+  Average prefill speedup: 0.84x  (SLOWER on ANE)
+
+  CPU_ONLY  cpu_frac = 1.00  (multi-core CPU via Accelerate)
+  CPU_AND_NE cpu_frac = 0.57
+
+  ROOT CAUSES:
+    1. MULTI-CORE CPU ADVANTAGE for large batches
+       – seq_len=512: large matmuls are efficiently parallelised
+         across all Performance cores via Accelerate/AMX
+       – cpu_frac > 1.0 confirms multi-threaded execution
+       – ANE has fixed throughput; large tiles don't help as much
+
+    2. DATA TRANSFER AMPLIFICATION
+       – Per-chunk hidden_states: (1,512,2560) fp16
+         = 2560 KB (vs 5 KB for decode)
+       – Round-trip transfer: 5120 KB IN + OUT per chunk
+       – 9 chunks × 5120 KB = 45.0 MB total transfers
+
+    3. SAME GRAPH PARTITIONING OVERHEAD
+       – Same hostile ops create the same CPU-fallback partitions
+       – But each partition now processes 512x more data
+       – Transfer cost per partition scales with batch size
+
+    4. STATE WRITES SCALE
+       – Prefill writes 512 positions to KV cache
+       – State write bandwidth becomes a bottleneck
+
+    5. ANE PIPELINE LATENCY
+       – ANE pipeline startup cost is amortised over small decode ops
+       – For large prefill, CPU can start computing immediately with all cores
+
+==============================================================================
+  OPTIMISATION RECOMMENDATIONS (PRIORITISED)
+==============================================================================
+
+  1. LM HEAD ON ANE (CPU_AND_NE)  — ALREADY DONE IN PRODUCTION
+     Speedup: 4.9x (25.5ms → 5.2ms)
+     Impact:  ~20ms saved per decode step
+     Status:  chat_server.py already uses CPU_AND_NE for lmhead ✓
+              validate.py / grade_quality.py still use CPU_ONLY (fix those)
+
+  2. PREFILL ON CPU_ONLY
+     Keep prefill chunks on CPU_ONLY (ANE is 0.84x slower)
+     Impact:  ~16% faster prefill throughput
+
+  3. REDUCE GRAPH PARTITIONS (MEDIUM EFFORT)
+     Replace gather-based RoPE with ANE-friendly rotation
+     (e.g., static cos/sin embedded as constants, avoiding runtime gather)
+     Impact:  Fewer CPU↔ANE boundaries → less transfer overhead
+     Estimated: 1-3ms per decode step
+
+  4. STATE COMPRESSION (HIGH EFFORT)
+     KV-cache state is the largest CPU overhead source
+     Options:
+       – Quantise KV cache to int8 (halves state I/O bandwidth)
+       – Reduce context length where possible
+       – Fuse multiple chunks (reduces state handoff count)
+     Impact:  ~5-10ms per decode step (50-60% of CPU overhead)
+
+  5. CHUNK 8 ON ALL (GPU FALLBACK)
+     Small 1-layer F-chunk benefits from GPU fallback
+     Impact:  Marginal (~1ms)
+
+  6. ELIMINATE REMAINING CASTS (LOW PRIORITY)
+     Model is already 99.6% fp16 — casts are minimal
+     Status:  Already optimal ✓
+
+
+==============================================================================
+  INVESTIGATION COMPLETE
+==============================================================================
+Done.
