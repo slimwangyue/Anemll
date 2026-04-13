@@ -98,8 +98,63 @@ public actor ModelLoader {
         }
     }
     
+    /// Compile a .mlpackage on-device and cache the result as .mlmodelc next to the source.
+    /// If the compiled model already exists and is newer than the source, skip recompilation.
+    private static func compilePackageIfNeeded(at packageURL: URL) throws -> URL {
+        let fm = FileManager.default
+        // Place compiled model next to the .mlpackage with .mlmodelc extension
+        let compiledURL = packageURL.deletingPathExtension().appendingPathExtension("mlmodelc")
+
+        // Check if cached compiled model is still valid
+        if fm.fileExists(atPath: compiledURL.path) {
+            let srcDate = (try? fm.attributesOfItem(atPath: packageURL.path)[.modificationDate] as? Date) ?? .distantPast
+            let dstDate = (try? fm.attributesOfItem(atPath: compiledURL.path)[.modificationDate] as? Date) ?? .distantPast
+            if dstDate >= srcDate {
+                print("  ♻️ Using cached compiled model: \(compiledURL.lastPathComponent)")
+                return compiledURL
+            }
+            // Source is newer — remove stale cache
+            try? fm.removeItem(at: compiledURL)
+        }
+
+        print("  🔨 Compiling \(packageURL.lastPathComponent) on-device...")
+        let tempCompiledURL = try MLModel.compileModel(at: packageURL)
+        // Move from temp location to persistent cache location
+        if fm.fileExists(atPath: compiledURL.path) {
+            try fm.removeItem(at: compiledURL)
+        }
+        try fm.moveItem(at: tempCompiledURL, to: compiledURL)
+        print("  ✅ Compiled → \(compiledURL.lastPathComponent)")
+        return compiledURL
+    }
+
+    /// Check if a model file exists at the given path, also checking for a .mlpackage variant.
+    private static func modelFileExists(atPath path: String) -> Bool {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: path) {
+            return true
+        }
+        // Check for .mlpackage variant
+        if path.hasSuffix(".mlmodelc") {
+            let packagePath = String(path.dropLast(9)) + ".mlpackage"
+            return fm.fileExists(atPath: packagePath)
+        }
+        return false
+    }
+
     private static func loadMLModel(at url: URL, configuration: MLModelConfiguration) throws -> MLModel {
-        try MLModel(contentsOf: url, configuration: configuration)
+        var loadURL = url
+        if url.pathExtension == "mlpackage" {
+            loadURL = try compilePackageIfNeeded(at: url)
+        } else if url.pathExtension == "mlmodelc" && !FileManager.default.fileExists(atPath: url.path) {
+            // .mlmodelc not found — try .mlpackage variant and compile on-device
+            let packageURL = url.deletingPathExtension().appendingPathExtension("mlpackage")
+            if FileManager.default.fileExists(atPath: packageURL.path) {
+                print("  📦 .mlmodelc not found, using .mlpackage: \(packageURL.lastPathComponent)")
+                loadURL = try compilePackageIfNeeded(at: packageURL)
+            }
+        }
+        return try MLModel(contentsOf: loadURL, configuration: configuration)
     }
 
     /// Helper class to avoid data races with currentProgress
@@ -212,13 +267,13 @@ public actor ModelLoader {
             print("Model directory: \(modelDir)")
             
             // Verify embeddings model
-            if !fileManager.fileExists(atPath: configCopy.embedPath) {
+            if !ModelLoader.modelFileExists(atPath: configCopy.embedPath) {
                 print("❌ ERROR: Embeddings model not found at path: \(configCopy.embedPath)")
                 throw ModelError.failedToLoadModel
             }
             
             // Verify LM head model
-            if !fileManager.fileExists(atPath: configCopy.lmheadPath) {
+            if !ModelLoader.modelFileExists(atPath: configCopy.lmheadPath) {
                 print("❌ ERROR: LM head model not found at path: \(configCopy.lmheadPath)")
                 throw ModelError.failedToLoadModel
             }
@@ -250,7 +305,7 @@ public actor ModelLoader {
                         chunkPath = "\(directory)/\(baseName)_chunk_\(String(format: "%02d", i))of\(String(format: "%02d", configCopy.numChunks)).mlmodelc"
                     }
                     
-                    if fileManager.fileExists(atPath: chunkPath) {
+                    if ModelLoader.modelFileExists(atPath: chunkPath) {
                         foundAnyChunk = true
                         availableChunks.append(i)
                     }
@@ -270,7 +325,7 @@ public actor ModelLoader {
                 print("✅ Found \(availableChunks.count) available chunks: \(availableChunks)")
             } else {
                 // Single chunk model - verify the FFN file exists
-                if !fileManager.fileExists(atPath: configCopy.ffnPath) {
+                if !ModelLoader.modelFileExists(atPath: configCopy.ffnPath) {
                     print("❌ ERROR: FFN model not found at path: \(configCopy.ffnPath)")
                     if let files = try? fileManager.contentsOfDirectory(atPath: modelDir) {
                         print("Available files in \(modelDir):")
@@ -318,7 +373,7 @@ public actor ModelLoader {
                 }
                 
                 // Skip this chunk if it doesn't exist
-                if !fileManager.fileExists(atPath: chunkPath) {
+                if !ModelLoader.modelFileExists(atPath: chunkPath) {
                     print("⚠️ Chunk \(i) not found at: \(chunkPath) - skipping")
                     continue
                 }
@@ -338,15 +393,33 @@ public actor ModelLoader {
                 var inferRotateModel: MLModel? = nil
                 var prefillRotateModel: MLModel? = nil
 
-                // Multi-function model: load infer and prefill functions separately.
+                // Try multi-function model first (functionName = "infer"),
+                // then fall back to single-function separate files.
                 print("Loading inference chunk \(i): \(chunkPath)")
                 modelConfig.functionName = "infer"
                 do {
                     inferModel = try ModelLoader.loadMLModel(at: ffnURL, configuration: modelConfig)
-                    print("✅ Inference chunk \(i) loaded")
+                    print("✅ Inference chunk \(i) loaded (multi-function)")
                 } catch {
-                    print("❌ Error loading inference chunk \(i): \(error)")
-                    throw ModelError.inferenceError("Failed to load inference chunk \(i): \(String(reflecting: error))")
+                    // Fallback: load as single-function model without functionName
+                    print("ℹ️ Multi-function load failed for infer chunk \(i), trying single-function fallback...")
+                    modelConfig.functionName = nil
+                    do {
+                        inferModel = try ModelLoader.loadMLModel(at: ffnURL, configuration: modelConfig)
+                        print("✅ Inference chunk \(i) loaded (single-function)")
+                    } catch {
+                        // Final fallback: try CPU+GPU
+                        print("⚠️ ANE load failed for infer chunk \(i), trying CPU+GPU...")
+                        modelConfig.computeUnits = .cpuAndGPU
+                        do {
+                            inferModel = try ModelLoader.loadMLModel(at: ffnURL, configuration: modelConfig)
+                            print("✅ Inference chunk \(i) loaded (CPU+GPU)")
+                        } catch let fallbackError {
+                            print("❌ Error loading inference chunk \(i): \(fallbackError)")
+                            throw ModelError.inferenceError("Failed to load inference chunk \(i): \(String(reflecting: fallbackError))")
+                        }
+                        modelConfig.computeUnits = configurationCopy.computeUnits
+                    }
                 }
 
                 try await progressTracker.updateProgress(
@@ -361,14 +434,35 @@ public actor ModelLoader {
                     detail: "Prefill \(i)/\(configCopy.numChunks)"
                 )
 
+                // Try multi-function prefill first, then fall back to separate prefill file.
                 print("Loading prefill chunk \(i): \(chunkPath)")
                 modelConfig.functionName = "prefill"
                 do {
                     prefillModel = try ModelLoader.loadMLModel(at: ffnURL, configuration: modelConfig)
-                    print("✅ Prefill chunk \(i) loaded")
+                    print("✅ Prefill chunk \(i) loaded (multi-function)")
                 } catch {
-                    print("❌ Error loading prefill chunk \(i): \(error)")
-                    throw ModelError.inferenceError("Failed to load prefill chunk \(i): \(String(reflecting: error))")
+                    // Fallback: try loading a separate prefill model file
+                    // Replace "ffn_" with "prefill_" in the chunk path
+                    let prefillPath = chunkPath.replacingOccurrences(of: "/ffn_", with: "/prefill_")
+                    let prefillURL = URL(fileURLWithPath: prefillPath)
+                    print("ℹ️ Multi-function load failed for prefill chunk \(i), trying separate file: \(prefillPath)")
+                    modelConfig.functionName = nil
+                    do {
+                        prefillModel = try ModelLoader.loadMLModel(at: prefillURL, configuration: modelConfig)
+                        print("✅ Prefill chunk \(i) loaded (separate file)")
+                    } catch {
+                        // Final fallback: try CPU+GPU for the separate prefill file
+                        print("⚠️ ANE load failed for prefill chunk \(i), trying CPU+GPU...")
+                        modelConfig.computeUnits = .cpuAndGPU
+                        do {
+                            prefillModel = try ModelLoader.loadMLModel(at: prefillURL, configuration: modelConfig)
+                            print("✅ Prefill chunk \(i) loaded (separate file, CPU+GPU)")
+                        } catch let fallbackError {
+                            print("❌ Error loading prefill chunk \(i): \(fallbackError)")
+                            throw ModelError.inferenceError("Failed to load prefill chunk \(i): \(String(reflecting: fallbackError))")
+                        }
+                        modelConfig.computeUnits = configurationCopy.computeUnits
+                    }
                 }
 
                 try await progressTracker.updateProgress(

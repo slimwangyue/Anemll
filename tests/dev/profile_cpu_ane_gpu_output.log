@@ -1,0 +1,203 @@
+==========================================================================================
+  CPU vs ANE vs GPU Profiling — Qwen3.5-4B P2
+  Models: qwen3_5_v4_lut4_p2
+  Combined dedup: True
+  CTX=2048, BATCH=512, chunks=9
+  Decode tokens: 10, Warmup: 3, Runs: 15
+==========================================================================================
+
+==========================================================================================
+  SECTION 1: Per-component single-token decode latency
+==========================================================================================
+
+--- CPU_ONLY ---
+  embed_single:    wall=   0.04ms  cpu=   0.06ms
+  ffn chunk0 (combined): wall=  15.44ms  cpu=  15.50ms
+  ffn chunk1 (combined): wall=  23.15ms  cpu=  26.84ms
+  ffn chunk2 (combined): wall=  23.14ms  cpu=  26.99ms
+  ffn chunk8 (combined): wall=   6.06ms  cpu=   6.91ms
+  ffn ALL 9 est:  wall= 152.53ms  cpu= 171.56ms  (extrapolated from 4 chunks)
+  lm_head_nosplit: wall=  28.13ms  cpu=  28.19ms
+  ─────────────────
+  PIPELINE TOTAL:  wall= 180.70ms  cpu= 199.80ms  → 5.5 t/s
+
+--- CPU_AND_NE ---
+  embed_single:    wall=   0.04ms  cpu=   0.04ms
+  ffn chunk0 (combined): wall=   7.39ms  cpu=   3.17ms
+  ffn chunk1 (combined): wall=  11.62ms  cpu=   6.08ms
+ANE model load has failed for on-device compiled macho. Must re-compile the E5 bundle. @ GetANEFModel  ffn chunk2 (combined): wall=  11.51ms  cpu=   5.95ms
+  ffn chunk8 (combined): wall=   3.04ms  cpu=   1.29ms
+  ffn ALL 9 est:  wall=  75.52ms  cpu=  37.10ms  (extrapolated from 4 chunks)
+  lm_head_nosplit: wall=   5.20ms  cpu=   0.79ms
+  ─────────────────
+  PIPELINE TOTAL:  wall=  80.75ms  cpu=  37.93ms  → 12.4 t/s
+
+--- CPU_AND_GPU ---
+  embed_single:    wall=   0.29ms  cpu=   0.23ms
+  ffn chunk0 (combined): wall=  10.51ms  cpu=   3.21ms
+  ffn chunk1 (combined): wall=  15.10ms  cpu=   4.83ms
+  ffn chunk2 (combined): wall=  15.06ms  cpu=   4.64ms
+  ffn chunk8 (combined): wall=   4.95ms  cpu=   1.65ms
+  ffn ALL 9 est:  wall= 102.65ms  cpu=  32.22ms  (extrapolated from 4 chunks)
+  lm_head_nosplit: wall=  12.04ms  cpu=   0.34ms
+  ─────────────────
+  PIPELINE TOTAL:  wall= 114.98ms  cpu=  32.78ms  → 8.7 t/s
+
+==========================================================================================
+  SECTION 2: Full pipeline decode (10 tokens)
+==========================================================================================
+
+--- CPU_ONLY ---
+  Median step:  wall= 188.88ms  cpu= 213.06ms  → 5.3 t/s
+  P5/P95 wall:  188.16 / 192.29 ms
+
+--- CPU_AND_NE ---
+  Median step:  wall= 147.03ms  cpu=  47.53ms  → 6.8 t/s
+  P5/P95 wall:  125.53 / 149.25 ms
+
+--- CPU_AND_GPU ---
+  Median step:  wall= 137.32ms  cpu=  41.99ms  → 7.3 t/s
+  P5/P95 wall:  135.21 / 140.67 ms
+
+==========================================================================================
+  SECTION 3: Prefill throughput (batch=512)
+==========================================================================================
+
+--- CPU_ONLY ---
+  embed_prefill:   wall=    2.4ms  cpu=    2.5ms  (210942 tok/s)
+  FAILED: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in main
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 63, in measure
+    fn()
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in <lambda>
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 842, in predict
+    return self._get_predictions(self.__proxy__,
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 892, in _get_predictions
+    return proxy.predict(data, state)
+RuntimeError: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+
+--- CPU_AND_NE ---
+  embed_prefill:   wall=    2.4ms  cpu=    2.4ms  (212945 tok/s)
+  FAILED: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in main
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 63, in measure
+    fn()
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in <lambda>
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 842, in predict
+    return self._get_predictions(self.__proxy__,
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 892, in _get_predictions
+    return proxy.predict(data, state)
+RuntimeError: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+
+--- CPU_AND_GPU ---
+  embed_prefill:   wall=    0.8ms  cpu=    0.7ms  (637907 tok/s)
+  FAILED: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in main
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 63, in measure
+    fn()
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 398, in <lambda>
+    w, c = measure(lambda: m_pf.predict(pf_inp, state=state_pf), n_warmup=2, n_runs=5)
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 842, in predict
+    return self._get_predictions(self.__proxy__,
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 892, in _get_predictions
+    return proxy.predict(data, state)
+RuntimeError: {
+    NSLocalizedDescription = "Feature valid_len is required but not specified.";
+}
+
+==========================================================================================
+  SUMMARY — Per-component median wall time (ms)
+==========================================================================================
+Component                   CPU_ONLY      CPU_AND_NE     CPU_AND_GPU      Best
+------------------------------------------------------------------------------
+Embed                        0.04 ms         0.04 ms         0.29 ms  CPU_AND_NE
+FFN (9 chunks)             152.53 ms        75.52 ms       102.65 ms  CPU_AND_NE
+LM Head                     28.13 ms         5.20 ms        12.04 ms  CPU_AND_NE
+------------------------------------------------------------------------------
+PIPELINE TOTAL          180.7ms  5.5t/s     80.8ms 12.4t/s    115.0ms  8.7t/s  CPU_AND_NE (2.2x)
+
+==========================================================================================
+  SPEEDUP vs CPU_ONLY
+==========================================================================================
+
+  CPU_AND_NE:
+    Embed               :  1.01x  (0.0ms → 0.0ms)
+    FFN (9 chunks)      :  2.02x  (152.5ms → 75.5ms)
+    LM Head             :  5.41x  (28.1ms → 5.2ms)
+
+  CPU_AND_GPU:
+    Embed               :  0.12x  (0.0ms → 0.3ms)
+    FFN (9 chunks)      :  1.49x  (152.5ms → 102.6ms)
+    LM Head             :  2.34x  (28.1ms → 12.0ms)
+
+Done.
+model.py", line 892, in _get_predictions
+    return proxy.predict(data, state)
+RuntimeError: {
+    NSLocalizedDescription = "Feature linear_conv_state is required but not specified.";
+}
+
+--- CPU_AND_GPU ---
+  embed_prefill:   wall=    0.7ms  cpu=    0.7ms  (701651 tok/s)
+  FAILED: {
+    NSLocalizedDescription = "Feature linear_conv_state is required but not specified.";
+}
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 374, in main
+    if fn_inputs is None:
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 63, in measure
+    fn()
+  File "/Volumes/MySSD/Anemll/tests/dev/profile_cpu_ane_gpu.py", line 374, in <lambda>
+    if fn_inputs is None:
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 842, in predict
+    return self._get_predictions(self.__proxy__,
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 892, in _get_predictions
+    return proxy.predict(data, state)
+RuntimeError: {
+    NSLocalizedDescription = "Feature linear_conv_state is required but not specified.";
+}
+
+==========================================================================================
+  SUMMARY — Per-component median wall time (ms)
+==========================================================================================
+Component                   CPU_ONLY      CPU_AND_NE     CPU_AND_GPU      Best
+------------------------------------------------------------------------------
+Embed                        0.04 ms         0.03 ms         0.24 ms  CPU_AND_NE
+FFN (9 chunks)               0.00 ms         0.00 ms         0.00 ms  CPU_ONLY
+LM Head                     25.27 ms         5.20 ms        12.01 ms  CPU_AND_NE
+------------------------------------------------------------------------------
+PIPELINE TOTAL           25.3ms 39.5t/s      5.2ms 191.0t/s     12.3ms 81.6t/s  CPU_AND_NE (4.8x)
+
+==========================================================================================
+  SPEEDUP vs CPU_ONLY
+==========================================================================================
+
+  CPU_AND_NE:
+    Embed               :  1.12x  (0.0ms → 0.0ms)
+    FFN (9 chunks)      :  0.00x  (0.0ms → 0.0ms)
+    LM Head             :  4.86x  (25.3ms → 5.2ms)
+
+  CPU_AND_GPU:
+    Embed               :  0.14x  (0.0ms → 0.2ms)
+    FFN (9 chunks)      :  0.00x  (0.0ms → 0.0ms)
+    LM Head             :  2.10x  (25.3ms → 12.0ms)
+
+Done.

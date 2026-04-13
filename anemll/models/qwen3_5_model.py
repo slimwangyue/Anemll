@@ -191,14 +191,13 @@ def _layer_index_from_key(key: str) -> int | None:
 
 
 class Qwen35RMSNorm(nn.Module):
-    """ANE-friendly RMSNorm with Qwen3.5 offset scaling semantics.
+    """ANE-friendly RMSNorm via doubled LayerNorm trick.
 
-    Uses direct rsqrt(mean(x²) + eps) instead of the doubled-concat
-    F.layer_norm(2H) trick.  The doubled-concat approach forces
-    layer_norm on 2× the hidden dimension, which exceeds ANE's native
-    layer_norm limit and pushes all norms to CPU (+10% ANE, 28% faster).
+    concat([x, -x]) gives zero mean, so LayerNorm variance == mean(x²),
+    making this mathematically exact RMSNorm using a single fused
+    layer_norm op that ANE can execute natively.
 
-    Accuracy: cos ≥ 0.99974 vs doubled-concat on Qwen3.5-4B.
+    Qwen3.5 offset scaling: output * (1 + weight).
     """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
@@ -209,16 +208,24 @@ class Qwen35RMSNorm(nn.Module):
         self.eps = eps
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        variance = (hidden_states * hidden_states).mean(-1, keepdim=True)
-        normed = hidden_states * torch.rsqrt(variance + self.eps)
+        x = hidden_states
+        doubled = torch.cat([x, -x], dim=-1)
+        normed = F.layer_norm(
+            doubled,
+            normalized_shape=(2 * self.hidden_size,),
+            weight=None,
+            bias=None,
+            eps=float(self.eps),
+        )
+        normed = normed[..., : self.hidden_size]
         scale = 1.0 + self.weight.to(normed.dtype, copy=False).to(normed.device, copy=False)
         return normed * scale
 
 
 class Qwen35RMSNormGated(nn.Module):
-    """RMSNorm + SiLU gate used by Qwen3.5 linear attention.
+    """RMSNorm + SiLU gate via doubled LayerNorm trick.
 
-    Uses direct rsqrt(mean(x²) + eps) — see Qwen35RMSNorm docstring.
+    See Qwen35RMSNorm docstring for the concat([x, -x]) approach.
     """
 
     def __init__(self, hidden_size: int, eps: float = 1e-6):
@@ -228,8 +235,18 @@ class Qwen35RMSNormGated(nn.Module):
         self.eps = eps
 
     def forward(self, hidden_states: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
-        variance = (hidden_states * hidden_states).mean(-1, keepdim=True)
-        normed = hidden_states * torch.rsqrt(variance + self.eps)
+        # ANE-oriented RMSNorm via doubled LayerNorm trick:
+        # concat([x, -x]) -> zero mean, LayerNorm variance equals mean(x^2).
+        x = hidden_states
+        doubled = torch.cat([x, -x], dim=-1)
+        normed = F.layer_norm(
+            doubled,
+            normalized_shape=(2 * self.hidden_size,),
+            weight=None,
+            bias=None,
+            eps=float(self.eps),
+        )
+        normed = normed[..., : self.hidden_size]
         out = normed * self.weight.to(hidden_states.dtype)
         out = out * F.silu(gate.to(hidden_states.dtype))
         return out
@@ -464,8 +481,6 @@ class Qwen35FullAttention(nn.Module):
         causal_mask: torch.Tensor | None = None,
         gate: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # TODO(parity): Mirror qwen_model.py::QwenAttention.forward_regular exactly
-        # once linear_attention/shared-cache contracts are finalized for Qwen3.5.
         k_cache, v_cache = kv_cache_layer
 
         # Match qwen_model.py: keep a fixed cache length contract for CoreML.
@@ -473,17 +488,22 @@ class Qwen35FullAttention(nn.Module):
         v_cache = v_cache[..., : self.config.state_length, :]
 
         n_rep = self.num_heads // self.num_kv_heads
-        key_states = _repeat_kv(k_cache.unsqueeze(0), n_rep)
-        value_states = _repeat_kv(v_cache.unsqueeze(0), n_rep)
 
-        attn_weights = (
-            torch.matmul(query_states.to(MODEL_DTYPE), key_states.transpose(-1, -2).to(MODEL_DTYPE))
-            * self.scale
-        )
-        if causal_mask is not None:
-            attn_weights = attn_weights + causal_mask.to(MODEL_DTYPE)
-        attn_weights = torch.softmax(attn_weights, dim=-1)
-        attn_output = torch.matmul(attn_weights, value_states.to(MODEL_DTYPE))
+        # P2: per-head attention for ANE L2 cache residency
+        head_outputs = []
+        for h in range(self.num_heads):
+            kv_h = h // n_rep
+            q_h = query_states[:, h:h+1, :, :].to(MODEL_DTYPE)
+            k_h = k_cache[kv_h:kv_h+1, :, :].unsqueeze(0).to(MODEL_DTYPE)
+            v_h = v_cache[kv_h:kv_h+1, :, :].unsqueeze(0).to(MODEL_DTYPE)
+            attn_w = torch.matmul(q_h, k_h.transpose(-1, -2)) * self.scale
+            if causal_mask is not None:
+                attn_w = attn_w + causal_mask.to(MODEL_DTYPE)
+            attn_w = torch.softmax(attn_w, dim=-1)
+            out_h = torch.matmul(attn_w, v_h)
+            head_outputs.append(out_h)
+
+        attn_output = torch.cat(head_outputs, dim=1)
         attn_output = attn_output.transpose(1, 2).contiguous().flatten(2, 3)
         return self._project_output(attn_output, hidden_states, gate=gate)
 
@@ -495,8 +515,6 @@ class Qwen35FullAttention(nn.Module):
         causal_mask: torch.Tensor | None = None,
         gate: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # TODO(parity): Mirror qwen_model.py::QwenAttention.forward_prefill exactly
-        # once linear_attention/shared-cache contracts are finalized for Qwen3.5.
         k_cache, v_cache = kv_cache_layer
 
         # Match qwen_model.py: keep a fixed cache length contract for CoreML.
@@ -504,19 +522,22 @@ class Qwen35FullAttention(nn.Module):
         v_cache = v_cache[..., : self.config.state_length, :]
 
         n_rep = self.num_heads // self.num_kv_heads
-        key_states = _repeat_kv(k_cache.unsqueeze(0), n_rep)
-        value_states = _repeat_kv(v_cache.unsqueeze(0), n_rep)
 
-        attn_weights = (
-            torch.matmul(
-                query_states.to(MODEL_DTYPE), key_states.transpose(-2, -1).to(MODEL_DTYPE)
-            )
-            * self.scale
-        )
-        if causal_mask is not None:
-            attn_weights = attn_weights + causal_mask.to(MODEL_DTYPE)
-        attn_weights = torch.softmax(attn_weights, dim=-1)
-        attn_output = torch.matmul(attn_weights, value_states.to(MODEL_DTYPE))
+        # P2: per-head attention for ANE L2 cache residency
+        head_outputs = []
+        for h in range(self.num_heads):
+            kv_h = h // n_rep
+            q_h = query_states[:, h:h+1, :, :].to(MODEL_DTYPE)
+            k_h = k_cache[kv_h:kv_h+1, :, :].unsqueeze(0).to(MODEL_DTYPE)
+            v_h = v_cache[kv_h:kv_h+1, :, :].unsqueeze(0).to(MODEL_DTYPE)
+            attn_w = torch.matmul(q_h, k_h.transpose(-2, -1)) * self.scale
+            if causal_mask is not None:
+                attn_w = attn_w + causal_mask.to(MODEL_DTYPE)
+            attn_w = torch.softmax(attn_w, dim=-1)
+            out_h = torch.matmul(attn_w, v_h)
+            head_outputs.append(out_h)
+
+        attn_output = torch.cat(head_outputs, dim=1)
         attn_output = attn_output.transpose(1, 2).contiguous().flatten(2, 3)
         return self._project_output(attn_output, hidden_states, gate=gate)
 
@@ -531,20 +552,28 @@ class Qwen35FullAttention(nn.Module):
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
 
-        n_rep = self.num_heads // self.num_kv_heads
-        key_states = _repeat_kv(key_states, n_rep)
-        value_states = _repeat_kv(value_states, n_rep)
-
         cos, sin = self.rotary.get(hidden_states, position_ids)
         query_states, key_states = _apply_rotary_partial(
             query_states, key_states, cos, sin, self.rotary.rotary_dim
         )
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) * self.scale
-        if causal_mask is not None:
-            attn_weights = attn_weights + causal_mask[:, :, :seq_len, :seq_len].to(attn_weights.dtype)
-        attn_weights = torch.softmax(attn_weights, dim=-1).to(value_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
+        n_rep = self.num_heads // self.num_kv_heads
+
+        # P2: per-head attention for ANE L2 cache residency
+        head_outputs = []
+        for h in range(self.num_heads):
+            kv_h = h // n_rep
+            q_h = query_states[:, h:h+1, :, :]
+            k_h = key_states[:, kv_h:kv_h+1, :, :]
+            v_h = value_states[:, kv_h:kv_h+1, :, :]
+            attn_w = torch.matmul(q_h, k_h.transpose(-2, -1)) * self.scale
+            if causal_mask is not None:
+                attn_w = attn_w + causal_mask[:, :, :seq_len, :seq_len].to(attn_w.dtype)
+            attn_w = torch.softmax(attn_w, dim=-1).to(v_h.dtype)
+            out_h = torch.matmul(attn_w, v_h)
+            head_outputs.append(out_h)
+
+        attn_output = torch.cat(head_outputs, dim=1)
         attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(bsz, seq_len, -1)
 
         return self._project_output(attn_output, hidden_states, gate=gate)

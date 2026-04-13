@@ -16,7 +16,7 @@ sys.path.insert(0, _SCRIPT_DIR)  # must be first for config.py
 from config import DEFAULT_OUTPUT, FFN_LABEL
 
 
-def compile_model(mlpackage_path, output_dir):
+def compile_model(mlpackage_path, output_dir, force_mlprogram=False):
     name = os.path.basename(mlpackage_path)
     out_name = name.replace(".mlpackage", ".mlmodelc")
     out_path = os.path.join(output_dir, out_name)
@@ -27,8 +27,12 @@ def compile_model(mlpackage_path, output_dir):
 
     print(f"  Compiling {name}...")
     t0 = time.time()
+    cmd = ["xcrun", "coremlcompiler", "compile", mlpackage_path, output_dir]
+    # Multi-function models require ML Program format for functionName-based loading
+    if force_mlprogram:
+        cmd += ["--add-mlprogram-if-eligible", "force"]
     result = subprocess.run(
-        ["xcrun", "coremlcompiler", "compile", mlpackage_path, output_dir],
+        cmd,
         capture_output=True, text=True,
     )
     elapsed = time.time() - t0
@@ -65,7 +69,9 @@ def main():
     # Separate models
     print("\n── Separate Models ──")
     for p in sorted(glob.glob(os.path.join(model_dir, "*.mlpackage"))):
-        if compile_model(p, output_dir):
+        # embed_lmhead_combined has multiple functions (embed, embed_prefill, lmhead)
+        is_multifunction = "embed_lmhead_combined" in os.path.basename(p)
+        if compile_model(p, output_dir, force_mlprogram=is_multifunction):
             ok += 1
         else:
             fail += 1
@@ -77,7 +83,8 @@ def main():
         os.makedirs(combined_out, exist_ok=True)
         print("\n── Combined Dedup Models ──")
         for p in sorted(glob.glob(os.path.join(combined_dir, "chunk*.mlpackage"))):
-            if compile_model(p, combined_out):
+            # Multi-function chunks (infer + prefill) require ML Program format
+            if compile_model(p, combined_out, force_mlprogram=True):
                 ok += 1
             else:
                 fail += 1

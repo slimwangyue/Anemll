@@ -29,6 +29,7 @@ private typealias Float16 = Float
     private var prefillEndTime: CFAbsoluteTime?
     private var FilterLLAMA01: Bool = false
     private let splitLMHead: Int
+    private var lmHeadFeatureNames: [String] = []  // Actual output feature names (e.g., ["logits"] or ["logits1"..."logitsN"])
     private let modelPrefix: String
     private let vocabSize: Int?
     private let lmHeadChunkSizes: [Int]?
@@ -95,6 +96,9 @@ private typealias Float16 = Float
     private var linearRecurrentStates: [MLMultiArray] = []
     private var convStateShapes: [[NSNumber]] = []
     private var recurrentStateShapes: [[NSNumber]] = []
+
+    // Token predicted by last prefill step (used to avoid double-processing with linear states)
+    private var lastPrefillPredictedToken: Int?
 
     private let hiddenStateSimilarityThreshold: Float = 0.9999
     private let kvStateSimilarityThreshold: Float = 0.99999
@@ -1219,7 +1223,13 @@ private typealias Float16 = Float
         }
 
         // Standard logits mode: LM head outputs logits1..logitsN
-        let featureNames = (1...splitLMHead).map { i in "logits\(i)" }
+        // For nosplit models (splitLMHead=1), also accept plain "logits" output name
+        var featureNames = (1...splitLMHead).map { i in "logits\(i)" }
+        if splitLMHead == 1, outputDescription["logits1"] == nil, outputDescription["logits"] != nil {
+            featureNames = ["logits"]
+            print("ℹ️ Using nosplit LM head with single 'logits' output")
+        }
+        lmHeadFeatureNames = featureNames
 
         for featureName in featureNames {
             guard let featureDesc = outputDescription[featureName] else {
@@ -1926,15 +1936,23 @@ private typealias Float16 = Float
             if debugLevel >= 1 {
                 print("\nProcessing remaining \(contextPos - batchPos) tokens one-at-a-time with infer model")
             }
+            lastPrefillPredictedToken = nil
             while batchPos < contextPos {
                 // Use generateNextToken which processes single token through embed + FFN chunks + lmhead
-                // We don't need the returned token, just need to populate KV cache
-                let _ = try await generateNextToken(
+                let predictedToken = try await generateNextToken(
                     for: contextTokens[batchPos],
                     currentPos: batchPos + 1,  // generateNextToken uses 1-indexed positions
                     temperature: 0,
                     tokenizer: tokenizer
                 )
+                // Save the last predicted token so generateResponse can use it directly
+                // instead of re-processing the last input token (which corrupts linear states)
+                if batchPos == contextPos - 1 {
+                    lastPrefillPredictedToken = predictedToken
+                    if debugLevel >= 1 {
+                        print("  Prefill last token predicted: \(predictedToken)")
+                    }
+                }
                 if debugLevel >= 1 {
                     print("  Prefill single token at pos \(batchPos): \(contextTokens[batchPos])")
                 }
@@ -2602,9 +2620,9 @@ private typealias Float16 = Float
         if GreedySearch {
             // --- Argmax branch: process each logits part in parallel ---
             let partialResults = try await withThrowingTaskGroup(of: PartialMax.self) { group -> [PartialMax] in
-                for i in 1...splitLMHead {
+                for i in 0..<lmHeadFeatureNames.count {
                     let partIndex = i
-                    let logitsKey = "logits\(partIndex)"
+                    let logitsKey = lmHeadFeatureNames[i]
                     
                     guard let logitsPart = outputBackings[logitsKey] else {
                         throw InferenceError.inferenceError("Missing feature \(logitsKey)")
@@ -2612,7 +2630,7 @@ private typealias Float16 = Float
                     
                     group.addTask { @Sendable in
                         let localLogitsPart = logitsPart
-                        let localOffset = (partIndex - 1) * logitsPart.count
+                        let localOffset = partIndex * logitsPart.count
                         
                         let buffer = try self.getFloatBuffer(from: localLogitsPart)
                         defer { buffer.unlock?() }
@@ -2675,15 +2693,15 @@ private typealias Float16 = Float
         } else {
             // --- Optimized sparse sampling: work directly with (index, logit) pairs ---
             let logitsResults = try await withThrowingTaskGroup(of: [(Int, Float)].self) { group -> [[(Int, Float)]] in
-                for i in 1...splitLMHead {
+                for i in 0..<lmHeadFeatureNames.count {
                     let partIndex = i
-                    let logitsKey = "logits\(partIndex)"
+                    let logitsKey = lmHeadFeatureNames[i]
                     guard let logitsPart = outputBackings[logitsKey] else {
                         throw InferenceError.inferenceError("Missing feature \(logitsKey)")
                     }
                     group.addTask { @Sendable in
                         let localLogitsPart = logitsPart
-                        let localOffset = (partIndex - 1) * logitsPart.count
+                        let localOffset = partIndex * logitsPart.count
                         
                         let buffer = try self.getFloatBuffer(from: localLogitsPart)
                         defer { buffer.unlock?() }
@@ -3369,6 +3387,7 @@ private typealias Float16 = Float
                 state = chunks[0].prefillModel.makeState()
             }
             lastArgmaxPosition = -1  // Reset argmax position tracking
+            lastPrefillPredictedToken = nil  // Reset prefill prediction cache
         }
 
         do {
@@ -3765,7 +3784,15 @@ private typealias Float16 = Float
                 // Use synchronous path for argmax mode (eliminates async overhead for ~10% speedup)
                 // Async path is used for logits mode which needs sampling
                 let nextToken: Int
-                if argmaxInModel && isMonolithic {
+                if let prefillToken = lastPrefillPredictedToken {
+                    // Use token predicted during prefill directly to avoid re-processing
+                    // the last input position (which corrupts linear/recurrent states in hybrid models)
+                    nextToken = prefillToken
+                    lastPrefillPredictedToken = nil
+                    if debugLevel >= 1 {
+                        print("Using prefill-predicted token: \(nextToken) (\(tokenizer.decode(tokens: [nextToken], skipSpecialTokens: false)))")
+                    }
+                } else if argmaxInModel && isMonolithic {
                     let result = try generateNextTokenArgmaxSync(
                         for: contextTokens[currentPos - 1],
                         currentPos: currentPos

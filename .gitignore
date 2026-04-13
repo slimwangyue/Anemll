@@ -75,3 +75,4 @@ tests/dev/_fullpipe_results/
 qwen3_5_v4_lut4/
 qwen3_5_v4_lut4_fp16/
 qwen3_5_v4_lut4_selfp32/
+qwen3_5_v4_lut4_p2/
