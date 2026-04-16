@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-04-15T05:23:10.378198",
+  "url": "http://localhost:8080",
+  "server_status": {
+    "ready": true,
+    "ctx": 2048,
+    "pos": 0,
+    "logical_pos": 0,
+    "rope_offset": 0,
+    "compactions": 0,
+    "turns": 0,
+    "cache_pct": 0,
+    "mode": "combined-dedup"
+  },
+  "phases": {
+    "ane": [
+      {
+        "id": "ANE1",
+        "name": "model_status",
+        "status": {
+          "ready": true,
+          "ctx": 2048,
+          "pos": 0,
+          "logical_pos": 0,
+          "rope_offset": 0,
+          "compactions": 0,
+          "turns": 0,
+          "cache_pct": 0,
+          "mode": "combined-dedup"
+        },
+        "pass": true
+      },
+      {
+        "id": "ANE2",
+        "name": "first_token_latency",
+        "latency_s": 2.234,
+        "pass": true
+      },
+      {
+        "id": "ANE3",
+        "name": "decode_100_tokens",
+        "tokens": 100,
+        "elapsed": 15.9,
+        "tok_s": 6.289308176100628,
+        "pass": true
+      },
+      {
+        "id": "ANE4",
+        "name": "long_gen_500",
+        "tokens": 500,
+        "elapsed": 72.8,
+        "tok_s": 6.868131868131869,
+        "stop_reason": "length",
+        "no_repetition": true,
+        "pass": true
+      },
+      {
+        "id": "ANE5",
+        "name": "think_on_throughput",
+        "tokens": 300,
+        "elapsed": 41.9,
+        "tok_s": 7.159904534606206,
+        "pass": true
+      }
+    ]
+  }
+}

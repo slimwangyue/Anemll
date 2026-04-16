@@ -1,0 +1,93 @@
+{
+  "timestamp": "2026-04-15T06:00:23.377514",
+  "url": "http://localhost:8080",
+  "server_status": {
+    "ready": true,
+    "ctx": 2048,
+    "pos": 259,
+    "logical_pos": 259,
+    "rope_offset": 0,
+    "compactions": 0,
+    "turns": 3,
+    "cache_pct": 12,
+    "mode": "combined-dedup"
+  },
+  "phases": {
+    "recovery": [
+      {
+        "id": "REC1",
+        "name": "reset_endpoint",
+        "reset_ok": true,
+        "status_pre_reset": {
+          "ready": true,
+          "ctx": 2048,
+          "pos": 186,
+          "logical_pos": 186,
+          "rope_offset": 0,
+          "compactions": 0,
+          "turns": 3,
+          "cache_pct": 9,
+          "mode": "combined-dedup"
+        },
+        "status_post_reset": {
+          "ready": true,
+          "ctx": 2048,
+          "pos": 0,
+          "logical_pos": 0,
+          "rope_offset": 0,
+          "compactions": 0,
+          "turns": 0,
+          "cache_pct": 0,
+          "mode": "combined-dedup"
+        },
+        "post_reset_response": "I don't have access to your personal preferences, memories, or data, so I can't know what **your** favorite number is!\n\nHowever, if you're curious about common favorites among people:\n- **7** is often",
+        "has_no_prior_context": true,
+        "pass": true
+      },
+      {
+        "id": "REC2",
+        "name": "post_reset_quality",
+        "response_preview": "Python and Rust are two of the most popular programming languages today, but they serve very different purposes and operate on fundamentally different paradigms. Choosing between them often depends on",
+        "tokens": 500,
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true
+        },
+        "pass": true
+      },
+      {
+        "id": "REC3",
+        "name": "rapid_reset_cycling",
+        "cycles": [
+          {
+            "cycle": 1,
+            "response": "2 + 2 = **4**.",
+            "has_answer": true
+          },
+          {
+            "cycle": 2,
+            "response": "2 + 2 = **4**.",
+            "has_answer": true
+          },
+          {
+            "cycle": 3,
+            "response": "2 + 2 = **4**.",
+            "has_answer": true
+          },
+          {
+            "cycle": 4,
+            "response": "2 + 2 equals **4**.",
+            "has_answer": true
+          },
+          {
+            "cycle": 5,
+            "response": "2 + 2 = **4**.",
+            "has_answer": true
+          }
+        ],
+        "pass": true
+      }
+    ]
+  }
+}

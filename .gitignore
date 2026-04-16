@@ -76,3 +76,7 @@ qwen3_5_v4_lut4/
 qwen3_5_v4_lut4_fp16/
 qwen3_5_v4_lut4_selfp32/
 qwen3_5_v4_lut4_p2/
+qwen3_5_4B_milestone_3.3/
+qwen3_5_4B_milestone_3.3_ctx4096/
+qwen3_5_4B_milestone_3.4_ctx4096_fkv/
+tests/dev/kv_persist_golden/

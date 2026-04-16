@@ -1,0 +1,268 @@
+{
+  "categories": {
+    "general_chat": {
+      "description": "General knowledge and creative tasks",
+      "prompts": [
+        {
+          "id": "G1",
+          "prompt": "What are the main differences between Python and Rust?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        },
+        {
+          "id": "G2",
+          "prompt": "Explain quantum entanglement to a 10-year-old.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        },
+        {
+          "id": "G3",
+          "prompt": "What happened during the French Revolution?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        },
+        {
+          "id": "G4",
+          "prompt": "Write a haiku about artificial intelligence.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        }
+      ]
+    },
+    "reasoning": {
+      "description": "Logic, math, and puzzle solving",
+      "prompts": [
+        {
+          "id": "R1",
+          "prompt": "If all roses are flowers and some flowers fade quickly, can we conclude all roses fade quickly? Explain.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_answer_contains": ["no", "cannot"],
+          "expect_eos": true
+        },
+        {
+          "id": "R2",
+          "prompt": "A farmer has 17 sheep. All but 9 die. How many are left?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_answer_contains": ["9"],
+          "expect_eos": true
+        },
+        {
+          "id": "R3",
+          "prompt": "Solve step by step: If 3x + 7 = 22, what is x?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_answer_contains": ["5"],
+          "expect_eos": true
+        },
+        {
+          "id": "R4",
+          "prompt": "You have 8 balls, one is heavier. Using a balance scale twice, how do you find it?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        }
+      ]
+    },
+    "coding": {
+      "description": "Code generation and debugging",
+      "prompts": [
+        {
+          "id": "C1",
+          "prompt": "Write a Python function to check if a string is a palindrome.",
+          "checks": ["non_empty", "no_repetition", "coherent", "contains_code"],
+          "expect_answer_contains": ["def"],
+          "expect_eos": true
+        },
+        {
+          "id": "C2",
+          "prompt": "Implement a binary search in Python with edge case handling.",
+          "checks": ["non_empty", "no_repetition", "coherent", "contains_code"],
+          "expect_answer_contains": ["def"],
+          "expect_eos": true
+        },
+        {
+          "id": "C3",
+          "prompt": "What's wrong with this code: `for i in range(10): list.append(i); list.remove(i)`?",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        }
+      ]
+    },
+    "instruction_following": {
+      "description": "Format compliance and constrained output",
+      "prompts": [
+        {
+          "id": "I1",
+          "prompt": "List exactly 5 countries in Asia, numbered 1-5.",
+          "checks": ["non_empty", "no_repetition", "coherent", "has_numbered_list"],
+          "expect_eos": true
+        },
+        {
+          "id": "I2",
+          "prompt": "Translate 'Good morning, how are you?' into French, Spanish, and Japanese.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        },
+        {
+          "id": "I3",
+          "prompt": "Summarize the concept of machine learning in exactly 3 sentences.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        }
+      ]
+    },
+    "multi_turn": {
+      "description": "Multi-turn conversation scenarios",
+      "scenarios": [
+        {
+          "id": "M1",
+          "name": "math_tutoring",
+          "turns": [
+            {"prompt": "What is a derivative in calculus?", "checks": ["non_empty", "no_repetition"]},
+            {"prompt": "How do I find the derivative of x squared?", "checks": ["non_empty", "no_repetition"], "expect_answer_contains": ["2x", "2*x"]},
+            {"prompt": "What about the chain rule?", "checks": ["non_empty", "no_repetition"]}
+          ]
+        },
+        {
+          "id": "M2",
+          "name": "code_review",
+          "turns": [
+            {"prompt": "I have a list of numbers and I want to find duplicates. What approach should I use?", "checks": ["non_empty", "no_repetition"]},
+            {"prompt": "Can you show me that in Python?", "checks": ["non_empty", "no_repetition", "contains_code"]},
+            {"prompt": "What's the time complexity of that solution?", "checks": ["non_empty", "no_repetition"]}
+          ]
+        },
+        {
+          "id": "M3",
+          "name": "context_carry",
+          "turns": [
+            {"prompt": "My name is Alice and I work at Google.", "checks": ["non_empty"]},
+            {"prompt": "What company do I work at?", "checks": ["non_empty"], "expect_answer_contains": ["Google"]},
+            {"prompt": "What is my name?", "checks": ["non_empty"], "expect_answer_contains": ["Alice"]}
+          ]
+        }
+      ]
+    },
+    "long_response": {
+      "description": "Longer generation tasks",
+      "prompts": [
+        {
+          "id": "L1",
+          "prompt": "Write a detailed comparison of TCP vs UDP, covering at least 5 aspects.",
+          "checks": ["non_empty", "no_repetition", "coherent", "min_length_200"],
+          "max_tokens": 1024,
+          "expect_eos": true
+        },
+        {
+          "id": "L2",
+          "prompt": "Explain the complete lifecycle of an HTTP request from browser to server and back.",
+          "checks": ["non_empty", "no_repetition", "coherent", "min_length_200"],
+          "max_tokens": 1024,
+          "expect_eos": true
+        }
+      ]
+    },
+    "edge_cases": {
+      "description": "Edge case and stress inputs",
+      "prompts": [
+        {
+          "id": "E1",
+          "prompt": ".",
+          "checks": ["non_empty"],
+          "expect_eos": true
+        },
+        {
+          "id": "E2",
+          "prompt": "Repeat after me: The quick brown fox jumps.",
+          "checks": ["non_empty", "no_repetition"],
+          "expect_eos": true
+        },
+        {
+          "id": "E3",
+          "prompt": "Please analyze the following passage and provide a detailed summary with key takeaways: The development of artificial intelligence has progressed through several distinct phases, from early symbolic reasoning systems in the 1950s and 1960s, through the expert systems era of the 1970s and 1980s, to the machine learning revolution beginning in the 1990s. Today, deep learning and large language models represent the cutting edge of AI research, with transformer architectures enabling unprecedented capabilities in natural language processing, computer vision, and multimodal understanding. However, significant challenges remain in areas such as reasoning, planning, safety alignment, and energy efficiency. The next frontier likely involves more efficient training methods, better integration of symbolic and neural approaches, and improved deployment on edge devices with specialized hardware accelerators.",
+          "checks": ["non_empty", "no_repetition", "coherent"],
+          "expect_eos": true
+        }
+      ]
+    }
+  },
+  "robustness": {
+    "description": "Context limit and compaction stress tests",
+    "tests": [
+      {
+        "id": "ROB1",
+        "name": "normal_usage",
+        "description": "3-turn conversation around pos ~500",
+        "turns": [
+          {"prompt": "Tell me about the solar system.", "max_tokens": 200},
+          {"prompt": "Which planet is the largest?", "max_tokens": 100},
+          {"prompt": "How far is it from the sun?", "max_tokens": 100}
+        ]
+      },
+      {
+        "id": "ROB2",
+        "name": "many_short_turns",
+        "description": "30 rapid-fire short exchanges to push position",
+        "turns_template": {
+          "prompts": [
+            "What is 1+1?", "What is 2+2?", "What is 3+3?", "What is 4+4?", "What is 5+5?",
+            "Name a color.", "Name a fruit.", "Name a city.", "Name a country.", "Name an animal.",
+            "Say hello.", "Say goodbye.", "Say thanks.", "Say please.", "Say yes.",
+            "What day is today?", "What is water?", "What is fire?", "What is ice?", "What is wind?",
+            "Count to 3.", "Count to 5.", "Spell cat.", "Spell dog.", "Spell fish.",
+            "What is AI?", "What is ML?", "What is NLP?", "What is CPU?", "What is GPU?"
+          ],
+          "max_tokens_each": 30
+        }
+      },
+      {
+        "id": "ROB3",
+        "name": "long_generation",
+        "description": "Generate very long response to push pos toward ctx",
+        "prompt": "Write a comprehensive essay about the history of computing, from Charles Babbage to modern AI. Cover at least 10 major milestones.",
+        "max_tokens": 2000
+      },
+      {
+        "id": "ROB4",
+        "name": "post_compaction_quality",
+        "description": "After hitting context limit, verify next response is still coherent",
+        "setup": "Fill context with long conversation first (via ROB2 or ROB3)",
+        "prompt": "Summarize what we have been discussing.",
+        "max_tokens": 200
+      }
+    ]
+  },
+  "recovery": {
+    "description": "Reset and restart behavior tests",
+    "tests": [
+      {
+        "id": "REC1",
+        "name": "reset_endpoint",
+        "description": "3-turn conversation, reset, verify no memory",
+        "turns_before_reset": [
+          {"prompt": "My favorite number is 42.", "max_tokens": 50},
+          {"prompt": "I live in Tokyo.", "max_tokens": 50},
+          {"prompt": "What is my favorite number?", "max_tokens": 50}
+        ],
+        "reset": true,
+        "post_reset_prompt": {"prompt": "What is my favorite number?", "max_tokens": 50},
+        "expect_no_context": true
+      },
+      {
+        "id": "REC2",
+        "name": "post_reset_quality",
+        "description": "After reset, verify first-turn quality is unchanged",
+        "reset": true,
+        "prompt": "What are the main differences between Python and Rust?",
+        "max_tokens": 500
+      },
+      {
+        "id": "REC3",
+        "name": "rapid_reset_cycling",
+        "description": "Reset 5 times, verify model works after each",
+        "cycles": 5,
+        "prompt_per_cycle": "What is 2+2?",
+        "max_tokens": 30,
+        "expect_answer_contains": ["4"]
+      }
+    ]
+  }
+}

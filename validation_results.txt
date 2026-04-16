@@ -1,0 +1,183 @@
+Qwen3.5 Validation Report
+Generated: 2026-04-15T01:32:12.609677
+Server: http://localhost:8080
+======================================================================
+
+── QUALITY ──
+
+  Results: 20/44 passed
+
+  ✗ G1 general_chat (4.6 tok/s)
+    Failed checks: has_think_tags
+    Response: This is a great question about two popular programming languages. I should provide a comprehensive comparison covering t...
+  ✗ G2 general_chat (4.7 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   **Topic:** Quantum Entanglement.
+    *   **Target Audience:** 10...
+  ✗ G3 general_chat (6.4 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the suggested overview of the French Revolution:
+
+1.  **Deconstruct the Request:...
+  ✗ G4 general_chat (6.6 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Topic: Artificial Intelligence (AI).
+    *   Form: Haiku (5-7-5 ...
+  ✗ R1 reasoning (2.9 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the correct answer:
+
+1.  **Analyze the Premise:**
+    *   Premise 1: "All roses ...
+  ✗ R2 reasoning (3.0 tok/s)
+    Failed checks: no_repetition, has_think_tags, eos_stop
+    Response: Thinking Process:
+
+1.  **Analyze the Riddle:**
+    *   Initial condition: A farmer has 17 sheep.
+    *   Event: "All but...
+  ✗ R3 reasoning (7.0 tok/s)
+    Failed checks: has_think_tags
+    Response: Thinking Process:
+
+1.  **Analyze the Request:** The user wants to solve a linear equation for $x$. The equation is $3x +...
+  ✗ R4 reasoning (4.1 tok/s)
+    Failed checks: no_repetition, has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the suggested solution:
+
+1.  **Analyze the Problem:**
+    *   **Total items:** 8...
+  ✗ C1 coding (6.9 tok/s)
+    Failed checks: has_think_tags
+    Response: A palindrome is a string that reads the same forwards and backwards. For example, "racecar" is a palindrome.
+
+I'll write...
+  ✗ C2 coding (6.9 tok/s)
+    Failed checks: no_repetition, has_think_tags
+    Response: The user wants me to implement a binary search algorithm in Python with proper edge case handling. I'll create a compreh...
+  ✗ C3 coding (6.6 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the suggested explanation of why that specific snippet is problematic:
+
+1.  **An...
+  ✗ I1 instruction_following (7.0 tok/s)
+    Failed checks: no_repetition, has_think_tags
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Task: List exactly 5 countries in Asia.
+    *   Constraint: Numb...
+  ✗ I2 instruction_following (6.6 tok/s)
+    Failed checks: no_repetition, has_think_tags, eos_stop
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Source text: "Good morning, how are you?"
+    *   Target languag...
+  ✗ I3 instruction_following (3.5 tok/s)
+    Failed checks: no_repetition, has_think_tags, eos_stop
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   Topic: Machine Learning (ML).
+    *   Constraint: Exactly 3 sent...
+  ✗ L1 long_response (6.9 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the comparison between TCP and UDP:
+
+1.  **Analyze the Request:**
+    *   **Topi...
+  ✗ L2 long_response (6.9 tok/s)
+    Failed checks: has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the suggested explanation of the HTTP lifecycle:
+
+1.  **Deconstruct the Request:...
+  ✗ E1 edge_cases (6.9 tok/s)
+    Failed checks: has_think_tags
+    Response: Okay, the user just sent a single period "." in their message. Let me think about what that means. It could be a mistake...
+  ✗ E2 edge_cases (7.0 tok/s)
+    Failed checks: no_repetition, has_think_tags
+    Response: Thinking Process:
+
+1.  **Analyze the Request:**
+    *   User says: "Repeat after me: The quick brown fox jumps."
+    *  ...
+  ✗ E3 edge_cases (6.7 tok/s)
+    Failed checks: no_repetition, has_think_tags, eos_stop
+    Response: Here's a thinking process that leads to the suggested summary and takeaways:
+
+1.  **Analyze the Request:**
+    *   **Inp...
+  ✓ M1 math_tutoring
+  ✗ M2 code_review
+  ✓ M3 context_carry
+  ✓ G1 general_chat (6.9 tok/s)
+  ✓ G2 general_chat (7.1 tok/s)
+  ✓ G3 general_chat (7.0 tok/s)
+  ✓ G4 general_chat (4.0 tok/s)
+  ✓ R1 reasoning (7.0 tok/s)
+  ✓ R2 reasoning (5.7 tok/s)
+  ✓ R3 reasoning (6.7 tok/s)
+  ✗ R4 reasoning (2.5 tok/s)
+    Failed checks: no_repetition
+    Response: To find the single heavier ball among 8 using a balance scale only **twice**, you must use a strategy of **grouping and ...
+  ✓ C1 coding (2.2 tok/s)
+  ✓ C2 coding (3.8 tok/s)
+  ✓ C3 coding (7.0 tok/s)
+  ✓ I1 instruction_following (3.7 tok/s)
+  ✓ I2 instruction_following (6.7 tok/s)
+  ✓ I3 instruction_following (6.0 tok/s)
+  ✗ L1 long_response (6.9 tok/s)
+    Failed checks: eos_stop
+    Response: Here is a detailed comparison between **TCP (Transmission Control Protocol)** and **UDP (User Datagram Protocol)**, two ...
+  ✗ L2 long_response (4.0 tok/s)
+    Failed checks: eos_stop
+    Response: The lifecycle of an HTTP request is a complex, multi-layered process that transforms your simple click into a sophistica...
+  ✓ E1 edge_cases (4.6 tok/s)
+  ✓ E2 edge_cases (0.5 tok/s)
+  ✓ E3 edge_cases (2.8 tok/s)
+  ✓ M1 math_tutoring
+  ✗ M2 code_review
+  ✓ M3 context_carry
+
+── ROBUSTNESS ──
+
+  Results: 4/4 passed
+
+  ✓ ROB1 normal_usage
+  ✓ ROB2 many_short_turns
+  ✓ ROB3 long_generation (3.5 tok/s)
+  ✓ ROB4 post_compaction_quality (6.2 tok/s)
+
+── RECOVERY ──
+
+  Results: 3/3 passed
+
+  ✓ REC1 reset_endpoint
+  ✓ REC2 post_reset_quality
+  ✓ REC3 rapid_reset_cycling
+
+── ANE ──
+
+  Results: 4/5 passed
+
+  ✗ ANE1 model_status
+  ✓ ANE2 first_token_latency
+  ✓ ANE3 decode_100_tokens (3.4 tok/s)
+  ✓ ANE4 long_gen_500 (2.4 tok/s)
+  ✓ ANE5 think_on_throughput (6.9 tok/s)
+
+======================================================================
+SUMMARY
+
+  quality: 20/44
+  robustness: 4/4
+  recovery: 3/3
+  ane: 4/5
+

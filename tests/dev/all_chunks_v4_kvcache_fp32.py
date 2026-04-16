@@ -43,9 +43,10 @@ import torch
 torch.set_grad_enabled(False)
 
 import coremltools as ct
+import coremltools.optimize as cto
 from coremltools.converters.mil.mil.passes.defs.quantization import FP16ComputePrecision
 
-from config import BATCH_SIZE, CTX, NUM_CHUNKS, CHUNK_RANGES
+from config import BATCH_SIZE, CTX, NUM_CHUNKS, CHUNK_RANGES, FFN_PER_CHANNEL
 
 # ── paths ──
 HF_MODEL = os.path.join(REPO_ROOT, "models", "Qwen__Qwen3.5-4B")
@@ -203,12 +204,42 @@ def get_chunk_fl(chunk_idx):
     return fp32, fp16
 
 
-def export_chunk(model, chunk_idx, chunk_dir, skip_existing=False):
-    """Export decode + prefill for one chunk with V4 precision policy."""
+def _apply_selective_lut4(mlmodel, fp16_families, lut_bits=4, per_channel=FFN_PER_CHANNEL):
+    """Apply LUT4 palettization while keeping specified families in FP16.
+
+    Uses discover_weight_ops from fp16_ablation to identify weight ops
+    and skip palettization for ops matching fp16_families.
+    """
+    from fp16_ablation import _build_selective_lut_config
+    opt_config = _build_selective_lut_config(
+        mlmodel, fp16_families, lut_bits=lut_bits, per_channel=per_channel,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return cto.coreml.palettize_weights(mlmodel, opt_config)
+
+
+# D2_fp16_attn_all: keep F-layer attention Q/K/V/O in FP16, everything else LUT4
+D2_FP16_ATTN_FAMILIES = ["attn_q", "attn_kv", "attn_o"]
+
+
+def export_chunk(model, chunk_idx, chunk_dir, skip_existing=False, fp16_attn=False):
+    """Export decode + prefill for one chunk with V4 precision policy.
+
+    Args:
+        fp16_attn: If True, apply D2_fp16_attn_all policy — keep F-layer
+            attention weights (q/k/v/o_proj) in FP16 instead of LUT4.
+            Only affects chunks containing F-layers.
+    """
     from anemll.ane_converter.qwen3_5_converter import Qwen35Converter
 
     sl, el = CHUNK_RANGES[chunk_idx]
     fp32_layers, fp16_layers = get_chunk_fl(chunk_idx)
+
+    # D2 selective palettization only matters for chunks with F-layers
+    use_selective_lut = fp16_attn and bool(fp32_layers)
+    if use_selective_lut:
+        print(f"    [D2] Selective LUT4: keeping attn Q/K/V/O in FP16 for F-layers {fp32_layers}")
 
     results = {}
 
@@ -225,10 +256,14 @@ def export_chunk(model, chunk_idx, chunk_dir, skip_existing=False):
         audit_log = []
         selector = make_v4_selector(fp16_layers, fp32_layers, audit_log=audit_log)
 
+        # When using selective LUT, convert without palettization (lut_bits=None)
+        # and apply selective LUT4 post-conversion. Otherwise use normal lut_bits=4.
+        effective_lut_bits = None if use_selective_lut else 4
+
         t0 = time.time()
         conv = Qwen35Converter(
             model, context_length=CTX, batch_size=BATCH_SIZE,
-            num_chunks=NUM_CHUNKS, lut_bits=4, per_channel=4,
+            num_chunks=NUM_CHUNKS, lut_bits=effective_lut_bits, per_channel=4,
             compute_precision="float32",
         )
         conv.compute_precision = FP16ComputePrecision(op_selector=selector)
@@ -238,6 +273,14 @@ def export_chunk(model, chunk_idx, chunk_dir, skip_existing=False):
             model, chunk_idx=chunk_idx, total_chunks=NUM_CHUNKS,
             override_start_layer=sl, override_end_layer=el,
         )
+
+        # Apply selective palettization: LUT4 for all weights except F-layer attention
+        if use_selective_lut:
+            print(f"    [{phase}] Applying selective LUT4 (D2_fp16_attn_all)...")
+            t_pal = time.time()
+            ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES)
+            print(f"    [{phase}] Selective palettization done ({time.time()-t_pal:.1f}s)")
+
         ml.save(pkg_path)
         elapsed = time.time() - t0
         del ml, conv
@@ -579,6 +622,8 @@ def main():
                         help="Max tokens per turn for standard validation")
     parser.add_argument("--custom-tokens", type=int, default=120,
                         help="Max tokens for custom prompt generation")
+    parser.add_argument("--fp16-attn", action="store_true",
+                        help="D2_fp16_attn_all: keep F-layer attention Q/K/V/O in FP16 (better quality, +1.2%% latency)")
     args = parser.parse_args()
 
     os.makedirs(ARTIFACT_DIR, exist_ok=True)
@@ -589,7 +634,9 @@ def main():
 
     print("=" * 70)
     print("  ALL-CHUNKS V4 PRECISION POLICY — Qwen3.5-4B")
-    print(f"  Policy:     F-layer compute → FP16, kv_cache_state → FP32")
+    policy = "V4 + D2_fp16_attn_all (F-layer attn Q/K/V/O → FP16)" if args.fp16_attn else \
+              "V4 (F-layer kv_cache_state → FP32, rest FP16)"
+    print(f"  Policy:     {policy}")
     print(f"  Artifacts:  {ARTIFACT_DIR}")
     print(f"  V2 source:  {V2_ARTIFACT_DIR}")
     print(f"  FP32 ref:   {FP32_MODEL_DIR}")
@@ -620,7 +667,8 @@ def main():
             os.makedirs(chunk_dir, exist_ok=True)
 
             result = export_chunk(model, ci, chunk_dir,
-                                  skip_existing=args.skip_existing)
+                                  skip_existing=args.skip_existing,
+                                  fp16_attn=args.fp16_attn)
             export_results[ci] = result
 
         del model

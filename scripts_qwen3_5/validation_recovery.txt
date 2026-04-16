@@ -1,0 +1,18 @@
+Qwen3.5 Validation Report
+Generated: 2026-04-15T06:00:23.377514
+Server: http://localhost:8080
+======================================================================
+
+── RECOVERY ──
+
+  Results: 3/3 passed
+
+  ✓ REC1 reset_endpoint
+  ✓ REC2 post_reset_quality
+  ✓ REC3 rapid_reset_cycling
+
+======================================================================
+SUMMARY
+
+  recovery: 3/3
+

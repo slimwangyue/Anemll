@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Qwen3.5-4B — Step 1: Export all CoreML model components.
+"""Qwen3.5 — Step 1: Export all CoreML model components.
 
-Exports (with --nosplit-lmhead --lut-bits 4):
+Exports (default V4+P2+D2 policy):
   - embeddings (LUT6 gs=8)                  → embeddings.mlpackage
   - lm_head_nosplit (LUT6 gs=8, single out)  → lm_head_nosplit.mlpackage
-  - 9 FFN decode chunks (LUT4 gs=4)          → ffn_LUT4_chunk{0..8}.mlpackage
-  - 9 FFN prefill chunks (LUT4 gs=4)         → prefill_LUT4_chunk{0..8}.mlpackage
+  - 9 FFN decode chunks (LUT4 gs=4, D2)      → ffn_LUT4_chunk{0..8}.mlpackage
+  - 9 FFN prefill chunks (LUT4 gs=4, D2)     → prefill_LUT4_chunk{0..8}.mlpackage
+
+Default features (Milestone 3.3):
+  V4: FP32 for kv_cache_state ops in F-layers, FP16 everywhere else
+  P2: Per-head attention splitting for ANE L2 cache residency (in model code)
+  D2: Keep F-layer attention Q/K/V/O weights in FP16 (skip LUT4 for those)
 
 Usage:
     python scripts_qwen3_5/export.py --model /path/to/Qwen3.5-4B --output /path/to/output
     python scripts_qwen3_5/export.py --nosplit-lmhead --lut-bits 4 --per-channel 4
     python scripts_qwen3_5/export.py --skip-existing
+    python scripts_qwen3_5/export.py --no-v4   # disable V4 (full FP16)
+    python scripts_qwen3_5/export.py --no-d2   # disable D2 (all weights LUT4)
 """
 import gc, time, argparse, os, sys, shutil, glob, re
 import numpy as np
@@ -154,6 +161,29 @@ def get_v4_compute_precision(model, chunk_idx):
     return FP16ComputePrecision(op_selector=selector), fp16_layers, fp32_layers
 
 
+# ── D2: Selective LUT4 — keep F-layer attention Q/K/V/O in FP16 ──
+
+# Attention weight families to keep in FP16 (not quantized to LUT4)
+D2_FP16_ATTN_FAMILIES = ["attn_q", "attn_kv", "attn_o"]
+
+
+def _apply_selective_lut4(mlmodel, fp16_families, lut_bits=4, per_channel=FFN_PER_CHANNEL):
+    """Apply LUT palettization while keeping specified weight families in FP16.
+
+    Uses discover_weight_ops from fp16_ablation to identify weight ops
+    and skip palettization for ops matching fp16_families.
+    """
+    import warnings
+    import coremltools.optimize as cto
+    from fp16_ablation import _build_selective_lut_config
+    opt_config = _build_selective_lut_config(
+        mlmodel, fp16_families, lut_bits=lut_bits, per_channel=per_channel,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return cto.coreml.palettize_weights(mlmodel, opt_config)
+
+
 # ── Selective FP32: keep only precision-critical ops in fp32 ──
 
 # Op types that are most sensitive to fp16 precision loss.
@@ -295,7 +325,7 @@ def export_lm_head_nosplit(model, out_dir, skip_existing, compute_precision="flo
 
 def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_prefill=False,
                       lut_bits_override=None, per_channel_override=None, compute_precision="float16",
-                      v4_precision=False, selective_fp32=False):
+                      v4_precision=False, selective_fp32=False, fp16_attn=False):
     lut_bits = lut_bits_override if lut_bits_override is not None else LUT_BITS
     ffn_pc = per_channel_override if per_channel_override is not None else FFN_PER_CHANNEL
     label = f"LUT{lut_bits}"
@@ -306,12 +336,14 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
         # Determine per-chunk compute precision
         # We compute: base_cp (for converter constructor), override_cp (to apply after), cp_label
         override_cp = None  # If set, replaces conv.compute_precision after constructor
+        has_f_layers = False
         if selective_fp32:
             cp_label = "SELECTIVE-FP32"
             base_cp = "float32"
             override_cp = get_selective_compute_precision()
         elif v4_precision:
             v4_cp, fp16_ls, fp32_ls = get_v4_compute_precision(model, ci)
+            has_f_layers = bool(fp32_ls)
             cp_label = f"V4(F={fp32_ls},L={fp16_ls})"
             base_cp = "float32"
             if not isinstance(v4_cp, str):
@@ -322,9 +354,17 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             cp_label = compute_precision.upper()
             base_cp = compute_precision
 
+        # D2: selective LUT4 — keep attn Q/K/V/O in FP16 for F-layer chunks
+        use_selective_lut = fp16_attn and has_f_layers
+        if use_selective_lut:
+            cp_label += "+D2"
+
         def _make_converter():
+            # When using D2 selective LUT, skip built-in palettization
+            # (we apply selective LUT4 post-conversion instead)
+            effective_lut = None if use_selective_lut else lut_bits
             conv = Qwen35Converter(model, context_length=CTX, batch_size=BATCH_SIZE,
-                                   num_chunks=NUM_CHUNKS, lut_bits=lut_bits, per_channel=ffn_pc,
+                                   num_chunks=NUM_CHUNKS, lut_bits=effective_lut, per_channel=ffn_pc,
                                    compute_precision=base_cp)
             if override_cp is not None:
                 conv.compute_precision = override_cp
@@ -340,6 +380,9 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             conv = _make_converter()
             ml = conv.convert_part_2(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                      override_start_layer=sl, override_end_layer=el)
+            if use_selective_lut:
+                print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
+                ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
             ml.save(dec_path)
             del ml, conv; gc.collect()
             print(f"  Saved decode chunk {ci} ({time.time()-t0:.1f}s)")
@@ -365,15 +408,18 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             else:
                 ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                                  override_start_layer=sl, override_end_layer=el)
+            if use_selective_lut:
+                print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
+                ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
             ml.save(pf_path)
             del ml, conv; gc.collect()
             print(f"  Saved {pf_desc} ({time.time()-t0:.1f}s)")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export Qwen3.5-4B for ANE (Milestone 2.1)")
+    parser = argparse.ArgumentParser(description="Export Qwen3.5 for ANE (Milestone 3.3 — V4+P2+D2)")
     parser.add_argument("--model", default=DEFAULT_HF_MODEL,
-                        help="Path to HuggingFace Qwen3.5-4B model directory")
+                        help="Path to HuggingFace Qwen3.5 model directory")
     parser.add_argument("--output", default=DEFAULT_OUTPUT,
                         help="Output directory for exported .mlpackage files")
     parser.add_argument("--skip-existing", action="store_true",
@@ -392,13 +438,32 @@ def main():
                         help="Use static-shape prefill (convert_part_2_prefill_exact) with valid_len")
     parser.add_argument("--fp32-compute", action="store_true",
                         help="Use FLOAT32 compute precision (default: FLOAT16)")
-    parser.add_argument("--v4-precision", action="store_true",
-                        help="V4 mixed precision: F-layers fp32, L-layers fp16 via op_selector")
+    # V4 is ON by default; use --no-v4 to disable
+    parser.add_argument("--v4-precision", action="store_true", default=True,
+                        help="V4 mixed precision: kv_cache_state → FP32, everything else FP16 (default: ON)")
+    parser.add_argument("--no-v4", dest="v4_precision", action="store_false",
+                        help="Disable V4 precision (use uniform compute precision)")
+    # D2 is ON by default; use --no-d2 to disable
+    parser.add_argument("--fp16-attn", action="store_true", default=True,
+                        help="D2: keep F-layer attention Q/K/V/O in FP16, rest LUT4 (default: ON)")
+    parser.add_argument("--no-d2", dest="fp16_attn", action="store_false",
+                        help="Disable D2 (all FFN weights quantized to LUT)")
     parser.add_argument("--selective-fp32", action="store_true",
                         help="Selective fp32: keep softmax/exp/rsqrt/reduce in fp32, rest fp16 for ANE")
     parser.add_argument("--nosplit-lmhead", action="store_true",
                         help="Export lm_head as single Conv2d (no 16-way split). Required for embed_lmhead_combined.")
+    parser.add_argument("--ctx", type=int, default=None,
+                        help="Override context length (default: from config.py)")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override batch/prefill size (default: from config.py)")
     args = parser.parse_args()
+
+    # CLI overrides for config values
+    global CTX, BATCH_SIZE
+    if args.ctx is not None:
+        CTX = args.ctx
+    if args.batch_size is not None:
+        BATCH_SIZE = args.batch_size
 
     # --chunks takes precedence over --only-chunk
     if args.chunks is not None:
@@ -412,17 +477,20 @@ def main():
     prefill_mode = "static" if args.static_prefill else "dynamic"
     cp = "float32" if args.fp32_compute else "float16"
     v4 = args.v4_precision
+    d2 = args.fp16_attn
     sel_fp32 = args.selective_fp32
     if sel_fp32:
         cp_desc = "SELECTIVE-FP32(softmax/exp/rsqrt/reduce→fp32, rest→fp16)"
     elif v4:
-        cp_desc = "V4(F-fp32/L-fp16)"
+        cp_desc = "V4(kv_cache→FP32, rest→FP16)"
+        if d2:
+            cp_desc += " + D2(attn Q/K/V/O→FP16)"
     else:
         cp_desc = cp.upper()
     print("=" * 70)
-    print("  Qwen3.5-4B ANE Export — Milestone 2.1 (LUT6 gs=4 FFN)")
+    print(f"  Qwen3.5 ANE Export — Milestone 3.3 (V4+P2+D2)")
     print(f"  Embed: LUT{LUT_BITS} gs={PER_CHANNEL} | LM Head: LUT{LM_HEAD_LUT} gs={PER_CHANNEL} | FFN: {FFN_LABEL} gs={FFN_PER_CHANNEL} × {NUM_CHUNKS} chunks")
-    print(f"  Chunk partition ([FLLL] 9-chunk): {CHUNK_RANGES}")
+    print(f"  Chunk partition ([FLLL] {NUM_CHUNKS}-chunk): {CHUNK_RANGES}")
     print(f"  Batch: {BATCH_SIZE} | CTX: {CTX} | Prefill: {prefill_mode} | Compute: {cp_desc}")
     if args._chunk_list is not None:
         print(f"  Chunks: {args._chunk_list}")
@@ -451,12 +519,14 @@ def main():
             export_ffn_chunks(model, args.output, args.skip_existing,
                               only_chunk=ci, static_prefill=args.static_prefill,
                               lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
-                              compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32)
+                              compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
+                              fp16_attn=d2)
     else:
         export_ffn_chunks(model, args.output, args.skip_existing,
                           static_prefill=args.static_prefill,
                           lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
-                          compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32)
+                          compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
+                          fp16_attn=d2)
     if not args.ffn_only:
         print("\n[2/3] Embeddings")
         export_embeddings(model, args.output, args.skip_existing, compute_precision=cp)

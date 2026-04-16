@@ -128,6 +128,49 @@ public actor ModelLoader {
         return compiledURL
     }
 
+    /// Resolve the file path for a given chunk index.
+    /// Supports two naming conventions:
+    ///   - 0-indexed: ffn_LUT4_chunk0.mlmodelc  (chunkN pattern)
+    ///   - 1-indexed: ffn_LUT4_chunk_01of09.mlmodelc  (_chunk_NNofMM pattern)
+    /// Falls back to constructing a path from the base name if no pattern matches.
+    private static func resolveChunkPath(basePath: String, chunkIndex0: Int, numChunks: Int) -> String {
+        // Try 0-indexed naming: replace trailing digit(s) before .mlmodelc/.mlpackage
+        // e.g. ffn_LUT4_chunk0.mlmodelc → ffn_LUT4_chunk3.mlmodelc
+        if let range = basePath.range(of: #"chunk\d+\.(mlmodelc|mlpackage)"#, options: .regularExpression) {
+            let candidate = basePath.replacingCharacters(
+                in: range,
+                with: "chunk\(chunkIndex0).\(basePath.hasSuffix(".mlpackage") ? "mlpackage" : "mlmodelc")"
+            )
+            if modelFileExists(atPath: candidate) { return candidate }
+        }
+        
+        // Try 1-indexed naming: _chunk_NNofMM
+        let i1 = chunkIndex0 + 1
+        if basePath.contains("_chunk_") {
+            let candidate = basePath.replacingOccurrences(
+                of: "_chunk_\\d+of",
+                with: "_chunk_\(String(format: "%02d", i1))of",
+                options: .regularExpression
+            )
+            if modelFileExists(atPath: candidate) { return candidate }
+        }
+        
+        // Fallback: construct from base name with 1-indexed _chunk_NNofMM
+        let directory = (basePath as NSString).deletingLastPathComponent
+        let filename = (basePath as NSString).lastPathComponent
+        var baseName = filename
+        if baseName.hasSuffix(".mlmodelc") {
+            baseName = String(baseName.dropLast(9))
+        } else if baseName.hasSuffix(".mlpackage") {
+            baseName = String(baseName.dropLast(10))
+        }
+        // Strip any existing chunk suffix for a clean base
+        if let r = baseName.range(of: #"_chunk.*$"#, options: .regularExpression) {
+            baseName = String(baseName[..<r.lowerBound])
+        }
+        return "\(directory)/\(baseName)_chunk_\(String(format: "%02d", i1))of\(String(format: "%02d", numChunks)).mlmodelc"
+    }
+
     /// Check if a model file exists at the given path, also checking for a .mlpackage variant.
     private static func modelFileExists(atPath path: String) -> Bool {
         let fm = FileManager.default
@@ -283,27 +326,13 @@ public actor ModelLoader {
                 var foundAnyChunk = false
                 var availableChunks: [Int] = []
                 
-                // Check all possible chunks
-                for i in 1...configCopy.numChunks {
-                    // Construct expected chunk path
-                    let chunkPath: String
-                    if configCopy.ffnPath.contains("_chunk_") {
-                        // If base path contains chunk info, replace chunk number
-                        chunkPath = configCopy.ffnPath.replacingOccurrences(
-                            of: "_chunk_\\d+of",
-                            with: "_chunk_\(String(format: "%02d", i))of",
-                            options: .regularExpression
-                        )
-                    } else {
-                        // Construct from base model path
-                        let directory = (configCopy.ffnPath as NSString).deletingLastPathComponent
-                        let filename = (configCopy.ffnPath as NSString).lastPathComponent
-                        var baseName = filename
-                        if baseName.hasSuffix(".mlmodelc") {
-                            baseName = String(baseName.dropLast(9))
-                        }
-                        chunkPath = "\(directory)/\(baseName)_chunk_\(String(format: "%02d", i))of\(String(format: "%02d", configCopy.numChunks)).mlmodelc"
-                    }
+                // Check all possible chunks (0-indexed internally)
+                for i in 0..<configCopy.numChunks {
+                    let chunkPath = ModelLoader.resolveChunkPath(
+                        basePath: configCopy.ffnPath,
+                        chunkIndex0: i,
+                        numChunks: configCopy.numChunks
+                    )
                     
                     if ModelLoader.modelFileExists(atPath: chunkPath) {
                         foundAnyChunk = true
@@ -338,39 +367,17 @@ public actor ModelLoader {
             }
             
             // Load chunks sequentially to avoid memory pressure
-            for i in 1...configCopy.numChunks {
+            for i in 0..<configCopy.numChunks {
                 if Task.isCancelled {
                     throw ModelError.loadingCancelled
                 }
                 
-                // Construct the path for this chunk
-                var chunkPath: String
-                
-                // Check if the original path already contains chunk information
-                if configCopy.ffnPath.contains("_chunk_") {
-                    // If it's already a chunk path, modify the chunk number
-                    chunkPath = configCopy.ffnPath.replacingOccurrences(
-                        of: "_chunk_\\d+of",
-                        with: "_chunk_\(String(format: "%02d", i))of",
-                        options: .regularExpression
-                    )
-                } else if configCopy.numChunks > 1 {
-                    // Multi-chunk model with non-chunked path format
-                    let directory = (configCopy.ffnPath as NSString).deletingLastPathComponent
-                    let filename = (configCopy.ffnPath as NSString).lastPathComponent
-                    
-                    // Remove .mlmodelc if present
-                    var baseName = filename
-                    if baseName.hasSuffix(".mlmodelc") {
-                        baseName = String(baseName.dropLast(9))
-                    }
-                    
-                    // Add chunk suffix
-                    chunkPath = "\(directory)/\(baseName)_chunk_\(String(format: "%02d", i))of\(String(format: "%02d", configCopy.numChunks)).mlmodelc"
-                } else {
-                    // Single chunk model
-                    chunkPath = configCopy.ffnPath
-                }
+                // Resolve path for this chunk (handles both 0-indexed and 1-indexed naming)
+                let chunkPath = ModelLoader.resolveChunkPath(
+                    basePath: configCopy.ffnPath,
+                    chunkIndex0: i,
+                    numChunks: configCopy.numChunks
+                )
                 
                 // Skip this chunk if it doesn't exist
                 if !ModelLoader.modelFileExists(atPath: chunkPath) {

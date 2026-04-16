@@ -1,0 +1,20 @@
+Qwen3.5 Validation Report
+Generated: 2026-04-15T05:23:10.378198
+Server: http://localhost:8080
+======================================================================
+
+── ANE ──
+
+  Results: 5/5 passed
+
+  ✓ ANE1 model_status
+  ✓ ANE2 first_token_latency
+  ✓ ANE3 decode_100_tokens (6.3 tok/s)
+  ✓ ANE4 long_gen_500 (6.9 tok/s)
+  ✓ ANE5 think_on_throughput (7.2 tok/s)
+
+======================================================================
+SUMMARY
+
+  ane: 5/5
+

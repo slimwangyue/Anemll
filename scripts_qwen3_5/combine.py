@@ -51,6 +51,12 @@ def combine_embed_lmhead(input_dir, skip_existing=False):
         print(f"  [skip] embed_lmhead_combined ({sz:.1f} MB)")
         return combined_path
 
+    # If combined_path is a symlink (e.g. linked from FP32 reference), keep it as-is
+    if os.path.islink(combined_path):
+        sz = dir_size_mb(combined_path)
+        print(f"  [skip] embed_lmhead_combined is a symlink ({sz:.1f} MB)")
+        return combined_path
+
     if not os.path.exists(lmhead_path):
         print(f"  ERROR: {lmhead_path} not found")
         return None
@@ -123,7 +129,13 @@ def main():
                         help="Override FFN label (e.g. 'LUT4'). Default: from config.py")
     parser.add_argument("--combine-embed-lmhead", action="store_true",
                         help="Also combine embeddings + lm_head_nosplit into embed_lmhead_combined.mlpackage")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Override batch/prefill size (default: from config.py)")
     args = parser.parse_args()
+
+    global BATCH_SIZE
+    if args.batch_size is not None:
+        BATCH_SIZE = args.batch_size
 
     label = args.label if args.label else FFN_LABEL
     combined_dir = os.path.join(args.input, f"combined_{label}_dedup")

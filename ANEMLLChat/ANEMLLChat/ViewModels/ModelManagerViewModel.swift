@@ -558,6 +558,15 @@ final class ModelManagerViewModel {
             logWarning("Failed to load custom models: \(error)", category: .model)
         }
 
+        // Step 2b: Discover bundled models from Models.bundle in app resources
+        let bundled = discoverBundledModels()
+        for bm in bundled {
+            if !models.contains(where: { $0.id == bm.id }) {
+                models.append(bm)
+                logInfo("Found bundled model: \(bm.name)", category: .model)
+            }
+        }
+
         // Step 3: Check model availability and reset stale download state.
         // Show models immediately so the UI isn't blank while linked models are checked.
         availableModels = models
@@ -584,6 +593,104 @@ final class ModelManagerViewModel {
         }
 
         hasCompletedInitialLoad = true
+    }
+
+    // MARK: - Bundled Model Discovery
+
+    /// Discover models inside Models.bundle in the app's resources.
+    /// Each subfolder that contains a meta.yaml is treated as a bundled model.
+    private func discoverBundledModels() -> [ModelInfo] {
+        var results: [ModelInfo] = []
+        let fm = FileManager.default
+
+        // Look for Models.bundle in the app bundle's Resources
+        guard let bundlePath = Bundle.main.path(forResource: "Models", ofType: "bundle") else {
+            logDebug("No Models.bundle found in app resources", category: .model)
+            return results
+        }
+
+        logInfo("Scanning Models.bundle at: \(bundlePath)", category: .model)
+
+        guard let entries = try? fm.contentsOfDirectory(atPath: bundlePath) else { return results }
+
+        for entry in entries.sorted() {
+            let modelDir = (bundlePath as NSString).appendingPathComponent(entry)
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: modelDir, isDirectory: &isDir), isDir.boolValue else { continue }
+
+            // Resolve symlinks to get the real path
+            let resolvedDir = (modelDir as NSString).resolvingSymlinksInPath
+
+            let metaPath = (resolvedDir as NSString).appendingPathComponent("meta.yaml")
+            guard fm.fileExists(atPath: metaPath) else {
+                logDebug("Skipping \(entry): no meta.yaml", category: .model)
+                continue
+            }
+
+            // Parse meta.yaml for display name and context length
+            let name: String
+            let contextLength: Int?
+            let architecture: String?
+            if let data = fm.contents(atPath: metaPath),
+               let yaml = String(data: data, encoding: .utf8) {
+                name = parseYamlValue(yaml, key: "name") ?? entry
+                contextLength = parseYamlValue(yaml, key: "context_length").flatMap { Int($0) }
+                architecture = parseYamlValue(yaml, key: "architecture")
+            } else {
+                name = entry
+                contextLength = nil
+                architecture = nil
+            }
+
+            // Compute size of the model directory
+            let sizeBytes = directorySize(at: resolvedDir)
+            let sizeString = ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
+
+            let model = ModelInfo(
+                id: "bundled:\(entry)",
+                name: name,
+                description: "Bundled model",
+                size: sizeString,
+                sizeBytes: sizeBytes,
+                contextLength: contextLength,
+                architecture: architecture,
+                isDownloaded: true,
+                localPath: resolvedDir,
+                metaYamlPath: metaPath,
+                sourceKind: .bundled
+            )
+            results.append(model)
+        }
+
+        logInfo("Discovered \(results.count) bundled models", category: .model)
+        return results
+    }
+
+    /// Simple YAML value extractor for flat key: value pairs
+    private func parseYamlValue(_ yaml: String, key: String) -> String? {
+        for line in yaml.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("\(key):") {
+                let value = trimmed.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+                return value.isEmpty ? nil : value
+            }
+        }
+        return nil
+    }
+
+    /// Compute total size of files in a directory (non-recursive for .mlmodelc, recursive otherwise)
+    private func directorySize(at path: String) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: path) else { return 0 }
+        var total: Int64 = 0
+        while let file = enumerator.nextObject() as? String {
+            let fullPath = (path as NSString).appendingPathComponent(file)
+            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
+               let size = attrs[.size] as? Int64 {
+                total += size
+            }
+        }
+        return total
     }
 
     // MARK: - HuggingFace Collection Fetch
@@ -842,6 +949,9 @@ final class ModelManagerViewModel {
 
     /// Delete a downloaded model
     func deleteModel(_ model: ModelInfo) async {
+        // Bundled models cannot be deleted
+        if model.sourceKind == .bundled { return }
+
         do {
             if model.sourceKind != .localLinked {
                 try await StorageService.shared.deleteModel(model.id)
@@ -1989,6 +2099,11 @@ final class ModelManagerViewModel {
                 model.isDownloaded = false
                 model.downloadError = "Linked source folder is unreachable (timed out). Remove and re-link when the volume is mounted."
             }
+
+        case .bundled:
+            // Bundled models are always available (populated during discovery)
+            model.isDownloaded = true
+            model.downloadError = nil
         }
 
         return model

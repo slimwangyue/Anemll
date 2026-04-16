@@ -196,14 +196,18 @@ class Qwen35Converter(BaseConverter):
         num_layers: int,
         prefix: str = "",
         split_full_attention_kv: bool = False,
+        num_kv_layers: int | None = None,
     ):
         cfg = model.config
+        # num_kv_layers: number of full-attention layers that actually need KV cache.
+        # Falls back to num_layers for backward compatibility.
+        _kv_n = num_kv_layers if num_kv_layers is not None else num_layers
         if split_full_attention_kv:
             states = [
                 ct.StateType(
                     wrapped_type=ct.TensorType(
                         shape=(
-                            num_layers,
+                            _kv_n,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -215,7 +219,7 @@ class Qwen35Converter(BaseConverter):
                 ct.StateType(
                     wrapped_type=ct.TensorType(
                         shape=(
-                            num_layers,
+                            _kv_n,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -230,7 +234,7 @@ class Qwen35Converter(BaseConverter):
                 ct.StateType(
                     wrapped_type=ct.TensorType(
                         shape=(
-                            2 * num_layers,
+                            2 * _kv_n,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -506,11 +510,17 @@ class Qwen35Converter(BaseConverter):
                 self.end_layer = end_layer
                 self.local_num_layers = (end_layer - start_layer) if end_layer is not None else len(model.model.layers)
                 cfg = model.config
+                # Count full-attention layers (need KV cache); min 1 for CoreML state.
+                _end = end_layer if end_layer is not None else len(model.model.layers)
+                self.num_kv_layers = max(1, sum(
+                    1 for i in range(start_layer, _end)
+                    if model.model.layers[i].layer_type != "linear_attention"
+                ))
                 self.register_buffer(
                     "k_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -523,7 +533,7 @@ class Qwen35Converter(BaseConverter):
                     "v_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -551,7 +561,8 @@ class Qwen35Converter(BaseConverter):
                 else:
                     self._has_linear = False
                 self.states = Qwen35Converter.GetChunkLocalTransformerStates(
-                    model, self.local_num_layers, prefix="", split_full_attention_kv=True
+                    model, self.local_num_layers, prefix="", split_full_attention_kv=True,
+                    num_kv_layers=self.num_kv_layers,
                 )
 
             def forward(self, hidden_states, position_ids, causal_mask, current_pos,
@@ -667,11 +678,17 @@ class Qwen35Converter(BaseConverter):
                 )
                 self._hidden_size = model.config.hidden_size
                 cfg = model.config
+                # Count full-attention layers (need KV cache); min 1 for CoreML state.
+                _end = end_layer if end_layer is not None else len(model.model.layers)
+                self.num_kv_layers = max(1, sum(
+                    1 for i in range(start_layer, _end)
+                    if model.model.layers[i].layer_type != "linear_attention"
+                ))
                 self.register_buffer(
                     "k_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -684,7 +701,7 @@ class Qwen35Converter(BaseConverter):
                     "v_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -717,7 +734,8 @@ class Qwen35Converter(BaseConverter):
                         layer.self_attn.export_expected_batch_size = 1
                         layer.self_attn.export_expected_seq_len = export_seq_len
                 self.states = Qwen35Converter.GetChunkLocalTransformerStates(
-                    model, self.local_num_layers, prefix="", split_full_attention_kv=True
+                    model, self.local_num_layers, prefix="", split_full_attention_kv=True,
+                    num_kv_layers=self.num_kv_layers,
                 )
 
             def forward(self, hidden_states, position_ids, causal_mask, current_pos,
@@ -880,11 +898,17 @@ class Qwen35Converter(BaseConverter):
                     else len(model.model.layers)
                 )
                 cfg = model.config
+                # Count full-attention layers (need KV cache); min 1 for CoreML state.
+                _end = end_layer if end_layer is not None else len(model.model.layers)
+                self.num_kv_layers = max(1, sum(
+                    1 for i in range(start_layer, _end)
+                    if model.model.layers[i].layer_type != "linear_attention"
+                ))
                 self.register_buffer(
                     "k_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -897,7 +921,7 @@ class Qwen35Converter(BaseConverter):
                     "v_cache",
                     torch.zeros(
                         (
-                            self.local_num_layers,
+                            self.num_kv_layers,
                             cfg.num_key_value_heads,
                             cfg.state_length,
                             cfg.head_dim,
@@ -936,6 +960,7 @@ class Qwen35Converter(BaseConverter):
                     self.local_num_layers,
                     prefix="",
                     split_full_attention_kv=True,
+                    num_kv_layers=self.num_kv_layers,
                 )
 
             def forward(

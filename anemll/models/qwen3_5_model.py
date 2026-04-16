@@ -1761,6 +1761,7 @@ class Qwen35Model(nn.Module):
         linear_conv_state: torch.Tensor | None,
         linear_recurrent_state: torch.Tensor | None,
         local_num_layers: int,
+        kv_cache_idx: int | None = None,
     ) -> torch.Tensor:
         """Single-token export path using chunk-local state tensors."""
         layer = self.layers[layer_idx]
@@ -1803,11 +1804,13 @@ class Qwen35Model(nn.Module):
         # Tensor-value slice: current_pos[0] → aten::select → stays dynamic on ANE.
         # No RangeDim needed. For decode at pos p: current_pos=[p], pos=p, write at pos:pos+1.
         pos = current_pos[0]
+        # Use kv_cache_idx (F-layer-only index) if provided, else fall back to local_layer_idx.
+        _kv_idx = kv_cache_idx if kv_cache_idx is not None else local_layer_idx
         if k_cache is not None and v_cache is not None:
-            k_cache[local_layer_idx, :, pos:pos+1, :] = key_states.squeeze(0)
-            v_cache[local_layer_idx, :, pos:pos+1, :] = value_states.squeeze(0)
-            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
-            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            k_cache[_kv_idx, :, pos:pos+1, :] = key_states.squeeze(0)
+            v_cache[_kv_idx, :, pos:pos+1, :] = value_states.squeeze(0)
+            key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
+            value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
             if kv_cache_0 is None:
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
@@ -1846,7 +1849,9 @@ class Qwen35Model(nn.Module):
         if end_layer is None:
             end_layer = len(self.layers)
         local_num_layers = end_layer - start_layer
+        kv_idx = 0
         for local_layer_idx, layer_idx in enumerate(range(start_layer, end_layer)):
+            is_full_attn = self.layers[layer_idx].layer_type != "linear_attention"
             hidden_states = self._process_layer_regular_single_token_export_local_state(
                 layer_idx=layer_idx,
                 local_layer_idx=local_layer_idx,
@@ -1860,7 +1865,10 @@ class Qwen35Model(nn.Module):
                 linear_conv_state=linear_conv_state,
                 linear_recurrent_state=linear_recurrent_state,
                 local_num_layers=local_num_layers,
+                kv_cache_idx=kv_idx if is_full_attn else None,
             )
+            if is_full_attn:
+                kv_idx += 1
         if apply_final_norm:
             hidden_states = self.norm(hidden_states)
         return hidden_states
@@ -1977,6 +1985,7 @@ class Qwen35Model(nn.Module):
         expected_batch_size: int | None = None,
         expected_seq_len: int | None = None,
         valid_len: torch.Tensor | None = None,
+        kv_cache_idx: int | None = None,
     ) -> torch.Tensor:
         """Prefill export path using chunk-local state tensors.
 
@@ -2026,11 +2035,13 @@ class Qwen35Model(nn.Module):
         # Tensor-value slice: current_pos[0] → aten::select → stays dynamic on ANE.
         # No RangeDim needed. For prefill at block_start P: current_pos=[P], write at pos:pos+seq_len.
         pos = current_pos[0]
+        # Use kv_cache_idx (F-layer-only index) if provided, else fall back to local_layer_idx.
+        _kv_idx = kv_cache_idx if kv_cache_idx is not None else local_layer_idx
         if k_cache is not None and v_cache is not None:
-            k_cache[local_layer_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
-            v_cache[local_layer_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
-            key_cache = k_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
-            value_cache = v_cache[local_layer_idx : local_layer_idx + 1].squeeze(0)
+            k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
+            v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+            key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
+            value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
             if kv_cache_0 is None:
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
@@ -2079,7 +2090,9 @@ class Qwen35Model(nn.Module):
             padding_mask = (positions < valid_len).to(hidden_states.dtype).reshape(1, expected_seq_len, 1)
         else:
             padding_mask = None
+        kv_idx = 0
         for local_layer_idx, layer_idx in enumerate(range(start_layer, end_layer)):
+            is_full_attn = self.layers[layer_idx].layer_type != "linear_attention"
             hidden_states = self._process_layer_prefill_export_local_state(
                 layer_idx=layer_idx,
                 local_layer_idx=local_layer_idx,
@@ -2096,7 +2109,10 @@ class Qwen35Model(nn.Module):
                 expected_batch_size=expected_batch_size,
                 expected_seq_len=expected_seq_len,
                 valid_len=valid_len,
+                kv_cache_idx=kv_idx if is_full_attn else None,
             )
+            if is_full_attn:
+                kv_idx += 1
             if padding_mask is not None:
                 hidden_states = hidden_states * padding_mask
         if apply_final_norm:

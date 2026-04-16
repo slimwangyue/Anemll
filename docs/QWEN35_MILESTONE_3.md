@@ -1111,3 +1111,76 @@ Possible directions:
 3. **CPU fallback for prefill only**: Accept slower prefill on A16, keep decode on ANE with RMSNorm
 4. **Retrain/fine-tune with layer_norm**: Would require access to training pipeline
 5. **Investigate coremltools MIL passes**: Custom pass to rewrite `reduce_mean → rsqrt` into `layer_norm` at the MIL level (preserving the exact RMSNorm computation but using the fused op)
+
+---
+
+## Milestone 3.3 — V4+P2+D2 Production Pipeline
+
+**Date**: 2025-07-14  
+**Status**: STABLE — consolidated production pipeline with V4+P2+D2 as defaults
+
+### Summary
+
+This milestone consolidates all experimental features (V4, P2, D2) into the production `scripts_qwen3_5/` pipeline, removing the dependency on `tests/dev/` scripts. The pipeline scripts now use only `scripts_qwen3_5/export.py` with V4+P2+D2 enabled by default.
+
+### Configuration Changes
+
+| Parameter     | Previous (3.2) | New (3.3)   | Notes                           |
+|---------------|-----------------|-------------|---------------------------------|
+| `BATCH_SIZE`  | 512             | 256         | Prefill input length            |
+| `CTX`         | 2048            | 4096        | Context window                  |
+| `LUT_BITS`    | 6               | 4           | LUT4 quantization (with D2)     |
+
+### Feature Defaults in `export.py`
+
+All three optimizations are now **ON by default** in `scripts_qwen3_5/export.py`:
+
+- **V4** (`--v4-precision`, default ON; `--no-v4` to disable): FP32 for `kv_cache_state` ops in F-layers, FP16 everywhere else. 57.5% fewer casts vs full FP32.
+- **P2** (built into model code, always active): Per-head attention splitting — 16 individual matmuls per F-layer for better ANE L2 cache residency. ~9% decode speedup.
+- **D2** (`--fp16-attn`, default ON; `--no-d2` to disable): F-layer attention Q/K/V/O weights stay FP16 (skip LUT4 palettization). +1.7% quality, +1.2% latency vs all-LUT4.
+
+### Pipeline Consolidation
+
+The 4B and 2B pipeline scripts now exclusively use `scripts_qwen3_5/` scripts:
+
+```
+run_pipeline_4B_V4.sh  →  export.py → combine.py → compile.py → validate.py
+run_pipeline_2B_V4.sh  →  export.py → combine.py → compile.py → validate.py
+```
+
+**Removed dependencies**:
+- `tests/dev/all_chunks_v4_kvcache_fp32.py` — D2 selective LUT4 logic ported into `export.py`
+- The old "Assemble" step (symlinks from FP32 reference directory) — `export.py` now outputs everything directly to the output directory
+- The 4B pipeline went from 5 steps to 4 steps (export → combine → compile → validate)
+
+### D2 Selective LUT4 in `export.py`
+
+The D2 (fp16_attn) logic from `tests/dev/all_chunks_v4_kvcache_fp32.py` was ported into `export.py`:
+
+1. `D2_FP16_ATTN_FAMILIES = ["attn_q", "attn_kv", "attn_o"]` — weight families to keep FP16
+2. `_apply_selective_lut4(mlmodel, fp16_families, lut_bits, per_channel)` — post-conversion palettization that skips attention weights in F-layers
+3. Uses `fp16_ablation._build_selective_lut_config()` for config generation
+4. When D2 is active and a chunk contains F-layers: built-in LUT is skipped (`lut_bits=None`), then selective palettization is applied post-conversion
+
+### CLI Flags
+
+New flags in pipeline scripts:
+- `--no-d2` — Disable D2 (all weights get LUT4)
+- `--lut-bits N` — Override LUT bits (default: 4)
+- `--per-channel N` — Override per-channel group size (default: 4)
+
+### Output Directory Structure
+
+```
+qwen3_5_4B_milestone_3.3/
+├── embed_single.mlpackage
+├── embed_prefill.mlpackage
+├── embed_lmhead_combined.mlpackage
+├── lm_head_nosplit.mlpackage
+├── ffn_LUT4_chunk{0..8}.mlpackage        (decode, 9 chunks)
+├── prefill_LUT4_chunk{0..8}.mlpackage     (prefill, 9 chunks)
+├── combined_LUT4_dedup/
+│   └── chunk{0..8}.mlpackage              (combined decode+prefill)
+├── tokenizer.json, tokenizer_config.json, vocab.json, merges.txt
+└── meta.yaml
+```

@@ -42,6 +42,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from transformers import AutoTokenizer
 from config import FFN_LABEL
+from inference_config import get_sampling_config
 
 # ── HTML / JS / CSS ──────────────────────────────────────────────────
 
@@ -143,14 +144,14 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 <div class="settings" id="settings">
-  <label>Max tokens: <input type="number" id="maxTokens" value="2048" min="16" max="4096"></label>
+  <label>Max tokens: <input type="number" id="maxTokens" value="4096" min="16" max="4096"></label>
   <label>Show thinking: <input type="checkbox" id="showThink" checked></label>
   <label>Thinking mode: <input type="checkbox" id="enableThinking" checked></label>
   <label>Repetition guard: <input type="checkbox" id="repGuard"></label>
   <label>Temperature: <input type="number" id="temperature" value="1.0" min="0.0" max="2.0" step="0.05"></label>
   <label>Top-p: <input type="number" id="topP" value="0.95" min="0.0" max="1.0" step="0.05"></label>
   <label>Top-k: <input type="number" id="topK" value="20" min="0" max="200" step="1"></label>
-  <label>Rep penalty: <input type="number" id="repPenalty" value="1.0" min="1.0" max="2.0" step="0.05"></label>
+  <label>Rep penalty: <input type="number" id="repPenalty" value="1.1" min="1.0" max="2.0" step="0.05"></label>
   <label>Pres penalty: <input type="number" id="presPenalty" value="1.5" min="0.0" max="2.0" step="0.1"></label>
   <label>Freq penalty: <input type="number" id="freqPenalty" value="0.0" min="0.0" max="2.0" step="0.1"></label>
 </div>
@@ -189,14 +190,16 @@ function toggleThink() {
     document.getElementById('temperature').value = '1.0';
     document.getElementById('topP').value = '0.95';
     document.getElementById('topK').value = '20';
-    document.getElementById('repPenalty').value = '1.0';
+    document.getElementById('repPenalty').value = '1.1';
     document.getElementById('presPenalty').value = '1.5';
+    document.getElementById('freqPenalty').value = '0.0';
   } else {
     document.getElementById('temperature').value = '0.7';
     document.getElementById('topP').value = '0.8';
     document.getElementById('topK').value = '20';
-    document.getElementById('repPenalty').value = '1.0';
+    document.getElementById('repPenalty').value = '1.1';
     document.getElementById('presPenalty').value = '1.5';
+    document.getElementById('freqPenalty').value = '0.0';
   }
 }
 
@@ -240,7 +243,7 @@ async function sendMsg() {
   document.getElementById('send').disabled = true;
   document.getElementById('typing').textContent = 'Generating...';
 
-  const maxTokens = parseInt(document.getElementById('maxTokens').value) || 2048;
+  const maxTokens = parseInt(document.getElementById('maxTokens').value) || 4096;
   const showThink = document.getElementById('showThink').checked;
   const enableThinking = document.getElementById('enableThinking').checked;
 
@@ -420,8 +423,25 @@ class RepetitionDetector:
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
+def _cleanup_ane_temp():
+    """Remove stale ANE compilation temps from boot drive."""
+    import glob, tempfile
+    tmp = tempfile.gettempdir()
+    for p in glob.glob(os.path.join(tmp, "*.mlmodelc")):
+        try:
+            import shutil; shutil.rmtree(p)
+        except Exception:
+            pass
+    for p in glob.glob(os.path.join(tmp, "TemporaryItems", "NSIRD_Python_*")):
+        try:
+            import shutil; shutil.rmtree(p)
+        except Exception:
+            pass
+
+
 def _load_model(path, compute_unit, function_name=None):
     """Load a CoreML model from .mlpackage or .mlmodelc."""
+    _cleanup_ane_temp()
     if path.endswith(".mlmodelc"):
         return ct.models.CompiledMLModel(path, compute_unit)
     kwargs = {"compute_units": compute_unit}
@@ -520,30 +540,49 @@ class ChatEngine:
         self._build_stop_ids()
         self._build_special_token_ids()
 
-        # ── Load embed + lm_head from combined multifunction model ──
-        embed_lmhead = self.embed_lmhead_path or _find_model(
-            self.model_dir, "embed_lmhead_combined")
-        print(f"[engine] Loading embed + lmhead from {os.path.basename(embed_lmhead)}...")
-        # Try both naming conventions: combine.py uses "embed"/"embed_prefill",
-        # older builds may use "embedding_decode"/"embedding_prefill"
-        try:
-            self.embed = _load_model(embed_lmhead, cu, function_name="embedding_decode")
-            embed_fn = "embedding_decode"
-        except (ValueError, RuntimeError):
-            self.embed = _load_model(embed_lmhead, cu, function_name="embed")
-            embed_fn = "embed"
-        print(f"  {embed_fn} function loaded (seq_len=1)")
-        try:
-            self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embedding_prefill")
-            embed_pf_fn = "embedding_prefill"
-        except (ValueError, RuntimeError):
-            self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embed_prefill")
-            embed_pf_fn = "embed_prefill"
-        print(f"  {embed_pf_fn} function loaded (seq_len={BATCH_SIZE})")
-        self.lmhead = _load_model(embed_lmhead, cu, function_name="lmhead")
-        self.lmhead_mode = "logits"
-        self.logits_key = "logits"
-        print("  lmhead function loaded (single logits output)")
+        # ── Load embed + lm_head ──
+        # Try separate pre-compiled .mlmodelc first (no runtime compilation),
+        # then fall back to combined multifunction .mlpackage.
+        _sep_embed = os.path.join(self.model_dir, "embed_single.mlmodelc")
+        _sep_embed_pf = os.path.join(self.model_dir, "embed_prefill.mlmodelc")
+        _sep_lmhead = os.path.join(self.model_dir, "lm_head_nosplit.mlmodelc")
+        if (not self.embed_lmhead_path
+                and os.path.isdir(_sep_embed)
+                and os.path.isdir(_sep_embed_pf)
+                and os.path.isdir(_sep_lmhead)):
+            print("[engine] Loading embed + lmhead from separate .mlmodelc files...")
+            self.embed = _load_model(_sep_embed, cu)
+            print(f"  embed_single loaded (seq_len=1)")
+            self.embed_prefill = _load_model(_sep_embed_pf, cu)
+            print(f"  embed_prefill loaded (seq_len={BATCH_SIZE})")
+            self.lmhead = _load_model(_sep_lmhead, cu)
+            self.lmhead_mode = "logits"
+            self.logits_key = "logits"
+            print("  lm_head_nosplit loaded (single logits output)")
+        else:
+            embed_lmhead = self.embed_lmhead_path or _find_model(
+                self.model_dir, "embed_lmhead_combined")
+            print(f"[engine] Loading embed + lmhead from {os.path.basename(embed_lmhead)}...")
+            # Try both naming conventions: combine.py uses "embed"/"embed_prefill",
+            # older builds may use "embedding_decode"/"embedding_prefill"
+            try:
+                self.embed = _load_model(embed_lmhead, cu, function_name="embedding_decode")
+                embed_fn = "embedding_decode"
+            except (ValueError, RuntimeError):
+                self.embed = _load_model(embed_lmhead, cu, function_name="embed")
+                embed_fn = "embed"
+            print(f"  {embed_fn} function loaded (seq_len=1)")
+            try:
+                self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embedding_prefill")
+                embed_pf_fn = "embedding_prefill"
+            except (ValueError, RuntimeError):
+                self.embed_prefill = _load_model(embed_lmhead, cu, function_name="embed_prefill")
+                embed_pf_fn = "embed_prefill"
+            print(f"  {embed_pf_fn} function loaded (seq_len={BATCH_SIZE})")
+            self.lmhead = _load_model(embed_lmhead, cu, function_name="lmhead")
+            self.lmhead_mode = "logits"
+            self.logits_key = "logits"
+            print("  lmhead function loaded (single logits output)")
 
         print("[engine] Loading FFN chunks (infer + prefill)...")
         self.ffns = []       # infer instances  (seq_len=1)
@@ -642,6 +681,41 @@ class ChatEngine:
         if self.endthink_token_id == t.unk_token_id:
             self.endthink_token_id = None
 
+    def _shapes_from_metadata(self, chunk_idx):
+        """Read linear state shapes from .mlmodelc/metadata.json.
+
+        Used when CompiledMLModel (no get_spec()) is loaded.
+        Returns (conv_shape, rec_shape) tuples.
+        """
+        import json as _json
+        conv_shape = (6, 1024, 32)   # fallback
+        rec_shape = (6, 32, 128, 128)
+        # Try to find metadata.json next to the loaded model
+        for label in (FFN_LABEL, "LUT4", "LUT6"):
+            meta_path = os.path.join(
+                self.model_dir, f"ffn_{label}_chunk{chunk_idx}.mlmodelc",
+                "metadata.json")
+            if os.path.isfile(meta_path):
+                break
+        else:
+            return conv_shape, rec_shape
+        try:
+            with open(meta_path) as f:
+                meta_list = _json.load(f)
+            for entry in meta_list:
+                for inp in entry.get("inputSchema", []):
+                    name = inp.get("name", "")
+                    shp_str = inp.get("shape", "")
+                    if name == "linear_conv_state" and shp_str:
+                        conv_shape = tuple(
+                            int(x) for x in shp_str.strip("[]").split(","))
+                    elif name == "linear_recurrent_state" and shp_str:
+                        rec_shape = tuple(
+                            int(x) for x in shp_str.strip("[]").split(","))
+        except Exception:
+            pass
+        return conv_shape, rec_shape
+
     def _detect_shapes(self):
         """Read per-chunk input shapes from model spec for state initialization.
 
@@ -674,7 +748,9 @@ class ChatEngine:
                     except Exception:
                         pass
             except Exception:
-                pass
+                # CompiledMLModel has no get_spec() — read from
+                # .mlmodelc/metadata.json instead.
+                conv_shape, rec_shape = self._shapes_from_metadata(ci)
             self.per_chunk_conv_shapes.append(conv_shape)
             self.per_chunk_rec_shapes.append(rec_shape)
             print(f"    chunk{ci} state: conv={conv_shape}, rec={rec_shape}")
@@ -966,7 +1042,7 @@ class ChatEngine:
     def _apply_penalties(self, logits, generated_ids,
                          repetition_penalty=1.1,
                          presence_penalty=0.0,
-                         frequency_penalty=0.2,
+                         frequency_penalty=0.0,
                          temperature=0.7,
                          top_p=0.9,
                          top_k=20):
@@ -1219,11 +1295,11 @@ class ChatEngine:
 
     # ── Main chat stream ─────────────────────────────────────────────
 
-    def chat_stream(self, user_msg, max_tokens=2048,
+    def chat_stream(self, user_msg, max_tokens=4096,
                      enable_thinking=True, repetition_guard=False,
                      temperature=0.7, top_p=0.9, top_k=20,
                      repetition_penalty=1.1, presence_penalty=0.0,
-                     frequency_penalty=0.2):
+                     frequency_penalty=0.0):
         """Generator yielding SSE events for a streaming response.
 
         Two-phase pipeline:
@@ -1313,6 +1389,12 @@ class ChatEngine:
                 print(f"[decode] Sampling: temp={temperature}, top_p={top_p}, "
                       f"top_k={top_k}, rep={repetition_penalty}, "
                       f"pres={presence_penalty}, freq={frequency_penalty}")
+            # Build cross-turn penalty context from recent token history
+            # (last 256 tokens from previous turns provide cross-turn
+            # repetition awareness)
+            PENALTY_HISTORY_WINDOW = 256
+            history_prefix = list(self.token_history)[-PENALTY_HISTORY_WINDOW:]
+
             stopped_by_rep = False
             for gi in range(max_tokens - 1):
                 if self.pos >= self.ctx:
@@ -1330,8 +1412,11 @@ class ChatEngine:
                             logits[think_token_id] = -1e9
                         if endthink_token_id is not None:
                             logits[endthink_token_id] = -1e9
+                    # Include recent history from prior turns for cross-turn
+                    # repetition penalty
+                    penalty_ids = history_prefix + generated_ids
                     next_id = self._apply_penalties(
-                        logits, generated_ids,
+                        logits, penalty_ids,
                         repetition_penalty, presence_penalty,
                         frequency_penalty, temperature, top_p,
                         top_k)
@@ -1395,6 +1480,7 @@ class ChatEngine:
 # ── HTTP Handler ─────────────────────────────────────────────────────
 
 engine = None
+_model_size = "4B"
 
 
 class ChatHandler(BaseHTTPRequestHandler):
@@ -1456,21 +1542,18 @@ class ChatHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Empty message"}, 400)
                 return
 
-            max_tokens = min(int(data.get("max_tokens", 2048)), 4096)
+            max_tokens = min(int(data.get("max_tokens", 4096)), 4096)
             enable_thinking = data.get("enable_thinking", True)
             repetition_guard = data.get("repetition_guard", False)
 
-            # ── Qwen3.5 official recommended defaults per mode ──
-            if enable_thinking:
-                # Think ON (general): temp=1.0, top_p=0.95, top_k=20,
-                # presence_penalty=1.5, repetition_penalty=1.0
-                def_temp, def_top_p, def_top_k = 1.0, 0.95, 20
-                def_rep, def_pres, def_freq = 1.0, 1.5, 0.0
-            else:
-                # Think OFF (general): temp=0.7, top_p=0.8, top_k=20,
-                # presence_penalty=1.5, repetition_penalty=1.0
-                def_temp, def_top_p, def_top_k = 0.7, 0.8, 20
-                def_rep, def_pres, def_freq = 1.0, 1.5, 0.0
+            # ── Sampling defaults from inference_config ──
+            _sc = get_sampling_config(_model_size, enable_thinking)
+            def_temp = _sc["temperature"]
+            def_top_p = _sc["top_p"]
+            def_top_k = _sc["top_k"]
+            def_rep = _sc["repetition_penalty"]
+            def_pres = _sc["presence_penalty"]
+            def_freq = _sc["frequency_penalty"]
 
             temperature = float(data.get("temperature", def_temp))
             top_p = float(data.get("top_p", def_top_p))
@@ -1506,13 +1589,16 @@ class ChatHandler(BaseHTTPRequestHandler):
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
-    global engine
+    global engine, _model_size
 
     from config import DEFAULT_OUTPUT, DEFAULT_HF_MODEL
 
     parser = argparse.ArgumentParser(
-        description="Qwen3.5-4B ANE Chat Server")
+        description="Qwen3.5 ANE Chat Server")
     parser.add_argument("--model-dir", default=DEFAULT_OUTPUT)
+    parser.add_argument("--model-size", default="4B",
+                        choices=["4B", "2B"],
+                        help="Model size for sampling defaults (default: 4B)")
     parser.add_argument("--tokenizer", default=None,
                         help="Tokenizer dir (default: same as --model-dir)")
     parser.add_argument("--port", type=int, default=8080)
@@ -1525,10 +1611,13 @@ def main():
                         help="Directory containing chunk{i} combined models")
     parser.add_argument("--system-prompt", default=None,
                         help="System prompt (default: none)")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Prefill batch size (default: auto-detect from model, fallback 512)")
     parser.add_argument("--compute-unit", default="all",
                         choices=["all", "cpu", "cpu_and_gpu", "cpu_and_ne"],
                         help="CoreML compute unit (default: all = CPU_AND_NE)")
     args = parser.parse_args()
+    _model_size = args.model_size
     if args.tokenizer is None:
         args.tokenizer = args.model_dir
 
@@ -1556,6 +1645,31 @@ def main():
     }
     compute_unit = _cu_map[args.compute_unit]
     print(f"  Compute unit: {compute_unit}")
+
+    # Override BATCH_SIZE / BLOCK_SIZE from CLI or auto-detect from model
+    global BATCH_SIZE, BLOCK_SIZE
+    if args.batch_size is not None:
+        BATCH_SIZE = args.batch_size
+        BLOCK_SIZE = args.batch_size
+        print(f"  Batch size (CLI): {BATCH_SIZE}")
+    else:
+        # Auto-detect from embed_prefill model input shape
+        _detect_dir = args.model_dir
+        for _ep_name in ("embed_prefill.mlpackage", "embed_prefill.mlmodelc"):
+            _ep_path = os.path.join(_detect_dir, _ep_name)
+            if os.path.exists(_ep_path):
+                try:
+                    _ep_spec = ct.utils.load_spec(_ep_path)
+                    for inp in _ep_spec.description.input:
+                        if inp.name == "input_ids":
+                            _detected = inp.type.multiArrayType.shape[1]
+                            BATCH_SIZE = _detected
+                            BLOCK_SIZE = _detected
+                            print(f"  Batch size (auto-detected): {BATCH_SIZE}")
+                            break
+                except Exception as e:
+                    print(f"  Warning: could not auto-detect batch size: {e}")
+                break
 
     engine = ChatEngine(args.model_dir, args.tokenizer, ctx=args.ctx,
                         num_chunks=num_chunks,

@@ -1,0 +1,26 @@
+Sampling Sweep Results - 2026-04-15T15:27:03.223367
+================================================================================
+
+Config                                         AvgRep  MaxRep Loops   MTAvg   MTMax MTLoop  Coher  Topic
+--------------------------------------------------------------------------------------------------------
+final_custom                                   0.0101  0.0445     0  0.0027  0.0109      0  1.000  1.000
+
+
+--- final_custom (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.0, "repetition_penalty": 1.1, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0101 max_rep=0.0445 loops=0
+  S1_en_short      tok= 500 rep=0.011 ng5=  0 loop= 0 [OK]
+  S2_en_reason     tok= 120 rep=0.000 ng5=  0 loop= 0 [OK]
+  S3_en_code       tok= 427 rep=0.021 ng5=  0 loop= 0 [OK]
+  S4_en_list       tok= 437 rep=0.000 ng5=  0 loop= 0 [OK]
+  L1_en_long       tok= 800 rep=0.005 ng5=  1 loop= 0 [OK]
+  L2_en_long       tok= 800 rep=0.000 ng5=  0 loop= 0 [OK]
+  CH1_zh_short     tok= 500 rep=0.000 ng5=  0 loop= 0 [OK]
+  CH2_zh_long      tok= 800 rep=0.044 ng5=  1 loop= 0 [OK]
+  REP1_history     tok= 600 rep=0.000 ng5=  0 loop= 0 [OK]
+  REP2_analysis    tok= 800 rep=0.021 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0027 max_rep=0.0109 loops=0
+  Turn 1 tok= 400 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 400 rep=0.000 ng5=  0 [OK]
+  Turn 3 tok= 500 rep=0.011 ng5=  1 [OK]
+  Turn 4 tok= 500 rep=0.000 ng5=  0 [OK]

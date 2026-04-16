@@ -55,6 +55,8 @@ struct ModelCard: View {
         switch model.sourceKind {
         case .localLinked:
             return "Are you sure you want to remove \(model.name)? This only removes the app reference. The original linked folder is not deleted."
+        case .bundled:
+            return "Bundled models cannot be deleted."
         case .localImported, .huggingFace:
             return "Are you sure you want to delete \(model.name)? This will remove local model files from app storage."
         }
@@ -187,7 +189,7 @@ struct ModelCard: View {
             contextMenuItems
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if model.isDownloaded {
+            if model.isDownloaded && model.sourceKind != .bundled {
                 Button(role: .destructive) {
                     showingDeleteAlert = true
                 } label: {

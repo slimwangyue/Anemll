@@ -1,0 +1,539 @@
+{
+  "timestamp": "2026-04-15T05:25:51.693460",
+  "url": "http://localhost:8080",
+  "server_status": {
+    "ready": true,
+    "ctx": 2048,
+    "pos": 322,
+    "logical_pos": 322,
+    "rope_offset": 0,
+    "compactions": 0,
+    "turns": 1,
+    "cache_pct": 15,
+    "mode": "combined-dedup"
+  },
+  "phases": {
+    "quality": [
+      {
+        "id": "G1",
+        "category": "general_chat",
+        "mode": "think-off",
+        "prompt": "What are the main differences between Python and Rust?",
+        "response_preview": "Python and Rust are two of the most popular programming languages today, but they serve very different purposes and operate on fundamentally different paradigms. Here are the main differences broken down by key categories:\n\n### 1. Programming Paradigm & Philosophy\n*   **Python**: It is an **interpre",
+        "tokens": 500,
+        "elapsed": 198.6,
+        "tok_s": 2.5176233635448138,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "G2",
+        "category": "general_chat",
+        "mode": "think-off",
+        "prompt": "Explain quantum entanglement to a 10-year-old.",
+        "response_preview": "Imagine you have two magic coins, but here's the twist: **they are linked like best friends.**\n\nNo matter how far apart they are\u2014whether they are sitting on your desk or one is in New York and the other is in Tokyo\u2014they always show the exact same side when you flip them at the same time.\n\n*   If you",
+        "tokens": 350,
+        "elapsed": 137.4,
+        "tok_s": 2.547307132459971,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "G3",
+        "category": "general_chat",
+        "mode": "think-off",
+        "prompt": "What happened during the French Revolution?",
+        "response_preview": "The **French Revolution** (1789\u20131799) was a profound and transformative period in French history that fundamentally dismantled the Ancien R\u00e9gime (the old order of absolute monarchy, aristocracy, and the privileged clergy). It ushered in a new era of radical social and political change across Europe ",
+        "tokens": 500,
+        "elapsed": 70.4,
+        "tok_s": 7.102272727272727,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "G4",
+        "category": "general_chat",
+        "mode": "think-off",
+        "prompt": "Write a haiku about artificial intelligence.",
+        "response_preview": "Silent neural nets,\nLearning patterns in the dark,\nThinking without breath.",
+        "tokens": 18,
+        "elapsed": 4.6,
+        "tok_s": 3.91304347826087,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "R1",
+        "category": "reasoning",
+        "mode": "think-off",
+        "prompt": "If all roses are flowers and some flowers fade quickly, can we conclude all roses fade quickly? Explain.",
+        "response_preview": "No, we **cannot** conclude that all roses fade quickly based on the premises provided.\n\nHere is the logical breakdown:\n\n1.  **Analyze the Premises**:\n    *   **Premise A**: All roses are flowers. (Set $R$ is a subset of Set $F$).\n    *   **Premise B**: Some flowers fade quickly. (This means there ex",
+        "tokens": 367,
+        "elapsed": 52.7,
+        "tok_s": 6.963946869070209,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "answer_contains": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "R2",
+        "category": "reasoning",
+        "mode": "think-off",
+        "prompt": "A farmer has 17 sheep. All but 9 die. How many are left?",
+        "response_preview": "This is a classic riddle that relies on interpreting the phrase \"all **but** 9\" correctly.\n\nIn this context, \"all but 9\" means that everything except for 9 sheep died. Therefore, the 9 sheep were saved.\n\nThe calculation is simple:\n*   Total sheep: 17\n*   Sheep that died: $17 - 9 = 8$\n*   Sheep remai",
+        "tokens": 106,
+        "elapsed": 19.0,
+        "tok_s": 5.578947368421052,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "answer_contains": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "R3",
+        "category": "reasoning",
+        "mode": "think-off",
+        "prompt": "Solve step by step: If 3x + 7 = 22, what is x?",
+        "response_preview": "To find the value of $x$ in the equation $3x + 7 = 22$, we will isolate $x$ through the following steps:\n\n### Step 1: Isolate the term with $x$\nSubtract 7 from both sides of the equation to move the constant term to the right side.\n$$\n\\begin{aligned}\n3x + 7 - 7 &= 22 - 7 \\\\\n3x &= 15\n\\end{aligned}\n$$",
+        "tokens": 246,
+        "elapsed": 34.9,
+        "tok_s": 7.048710601719198,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "answer_contains": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "R4",
+        "category": "reasoning",
+        "mode": "think-off",
+        "prompt": "You have 8 balls, one is heavier. Using a balance scale twice, how do you find it?",
+        "response_preview": "To find the single heavier ball among 8 balls using a balance scale only **twice**, you must use a strategy of **grouping and elimination**. Here is the step-by-step logical deduction:\n\n### Step 1: First Weighing\nDivide the 8 balls into three groups:\n- **Group A**: 3 balls\n- **Group B**: 3 balls\n- *",
+        "tokens": 500,
+        "elapsed": 72.8,
+        "tok_s": 6.868131868131869,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "C1",
+        "category": "coding",
+        "mode": "think-off",
+        "prompt": "Write a Python function to check if a string is a palindrome.",
+        "response_preview": "Here's a simple and efficient Python function to check if a string is a palindrome:\n\n```python\ndef is_palindrome(s: str) -> bool:\n    \"\"\"\n    Check if the given string is a palindrome (ignoring spaces, punctuation, and case).\n    \n    Args:\n        s (str): The input string to check.\n    \n    Return",
+        "tokens": 420,
+        "elapsed": 59.9,
+        "tok_s": 7.011686143572621,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "contains_code": true,
+          "answer_contains": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "C2",
+        "category": "coding",
+        "mode": "think-off",
+        "prompt": "Implement a binary search in Python with edge case handling.",
+        "response_preview": "Here is a robust implementation of Binary Search in Python, focusing on clarity, efficiency, and comprehensive edge case handling.\n\n### Implementation Details\n\nThis implementation includes:\n1.  **Input Validation**: Checks if the input list is empty or unsorted.\n2.  **Zero-based Indexing**: Returns ",
+        "tokens": 500,
+        "elapsed": 72.4,
+        "tok_s": 6.906077348066297,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "contains_code": true,
+          "answer_contains": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "C3",
+        "category": "coding",
+        "mode": "think-off",
+        "prompt": "What's wrong with this code: `for i in range(10): list.append(i); list.remove(i)`?",
+        "response_preview": "The issue with your code lies in how Python handles **list indexing** when you modify a list while iterating over it.\n\n### The Problem\nIn the loop `for i in range(10)`, the variable `i` represents the **index** (position) of the element, not the value itself.\n\nWhen you execute `list.remove(i)`:\n1.  ",
+        "tokens": 500,
+        "elapsed": 70.9,
+        "tok_s": 7.052186177715091,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "I1",
+        "category": "instruction_following",
+        "mode": "think-off",
+        "prompt": "List exactly 5 countries in Asia, numbered 1-5.",
+        "response_preview": "1. China\n2. India\n3. Japan\n4. South Korea\n5. Thailand",
+        "tokens": 21,
+        "elapsed": 5.7,
+        "tok_s": 3.6842105263157894,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "has_numbered_list": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "I2",
+        "category": "instruction_following",
+        "mode": "think-off",
+        "prompt": "Translate 'Good morning, how are you?' into French, Spanish, and Japanese.",
+        "response_preview": "Here are the translations for \"Good morning, how are you?\" in the three languages you requested:\n\n**French**\n> \u00ab Bonjour, comment allez-vous ? \u00bb\n\n**Spanish**\n> \u00ab Buenos d\u00edas, \u00bfc\u00f3mo est\u00e1s? \u00bb\n\n**Japanese**\n> \u300c\u304a\u306f\u3088\u3046\u3054\u3056\u3044\u307e\u3059\u3002\u304a\u5143\u6c17\u3067\u3059\u304b\uff1f\u300d\n*(Ohiy\u014d gozaimasu. O genki desu ka?)*",
+        "tokens": 85,
+        "elapsed": 16.1,
+        "tok_s": 5.279503105590062,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "I3",
+        "category": "instruction_following",
+        "mode": "think-off",
+        "prompt": "Summarize the concept of machine learning in exactly 3 sentences.",
+        "response_preview": "Machine learning is a branch of artificial intelligence that enables computers to learn patterns and make decisions from data without being explicitly programmed for every specific task. By utilizing algorithms, these systems automatically improve their performance over time as they are exposed to m",
+        "tokens": 78,
+        "elapsed": 13.1,
+        "tok_s": 5.954198473282443,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "L1",
+        "category": "long_response",
+        "mode": "think-off",
+        "prompt": "Write a detailed comparison of TCP vs UDP, covering at least 5 aspects.",
+        "response_preview": "Here is a detailed comparison between **TCP (Transmission Control Protocol)** and **UDP (User Datagram Protocol)**, two of the most fundamental transport layer protocols in the Internet protocol stack. They serve different purposes depending on the requirements of the application using them.\n\n### 1.",
+        "tokens": 1024,
+        "elapsed": 151.0,
+        "tok_s": 6.781456953642384,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "min_length_200": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "L2",
+        "category": "long_response",
+        "mode": "think-off",
+        "prompt": "Explain the complete lifecycle of an HTTP request from browser to server and back.",
+        "response_preview": "The lifecycle of an HTTP request is a fascinating journey involving networking protocols, operating system stacks, and application logic. It can be broken down into two distinct phases: the **Request Phase** (Browser \u2192 Server) and the **Response Phase** (Server \u2192 Browser).\n\nHere is the step-by-step ",
+        "tokens": 1024,
+        "elapsed": 446.2,
+        "tok_s": 2.2949350067234424,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "min_length_200": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "E1",
+        "category": "edge_cases",
+        "mode": "think-off",
+        "prompt": ".",
+        "response_preview": "Hello! It seems like your message might have gotten cut off. How can I assist you today? \ud83d\ude0a",
+        "tokens": 23,
+        "elapsed": 7.6,
+        "tok_s": 3.0263157894736845,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "E2",
+        "category": "edge_cases",
+        "mode": "think-off",
+        "prompt": "Repeat after me: The quick brown fox jumps.",
+        "response_preview": "The quick brown fox jumps.",
+        "tokens": 7,
+        "elapsed": 14.7,
+        "tok_s": 0.4761904761904762,
+        "stop_reason": "eos",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "no_think_tags": true,
+          "eos_stop": true
+        },
+        "pass": true,
+        "error": null
+      },
+      {
+        "id": "E3",
+        "category": "edge_cases",
+        "mode": "think-off",
+        "prompt": "Please analyze the following passage and provide a detailed summary with key takeaways: The development of artificial intelligence has progressed through several distinct phases, from early symbolic reasoning systems in the 1950s and 1960s, through the expert systems era of the 1970s and 1980s, to the machine learning revolution beginning in the 1990s. Today, deep learning and large language models represent the cutting edge of AI research, with transformer architectures enabling unprecedented capabilities in natural language processing, computer vision, and multimodal understanding. However, significant challenges remain in areas such as reasoning, planning, safety alignment, and energy efficiency. The next frontier likely involves more efficient training methods, better integration of symbolic and neural approaches, and improved deployment on edge devices with specialized hardware accelerators.",
+        "response_preview": "Here is a detailed analysis and summary of the provided passage regarding the evolution and current state of Artificial Intelligence (AI).\n\n### **Detailed Summary**\n\nThe passage outlines the historical trajectory of AI development, moving from its early conceptual roots to its present-day dominance ",
+        "tokens": 500,
+        "elapsed": 71.1,
+        "tok_s": 7.032348804500704,
+        "stop_reason": "length",
+        "checks": {
+          "non_empty": true,
+          "no_repetition": true,
+          "coherent": true,
+          "no_think_tags": true,
+          "eos_stop": false
+        },
+        "pass": false,
+        "error": null
+      },
+      {
+        "id": "M1",
+        "name": "math_tutoring",
+        "mode": "think-off",
+        "turns": [
+          {
+            "turn": 1,
+            "prompt": "What is a derivative in calculus?",
+            "response_preview": "In calculus, a **derivative** is a fundamental concept that measures the **instantaneous rate of change** of a function at a specific point. It essentially tells you how much a quantity (like position",
+            "tokens": 500,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": true
+            },
+            "pass": true,
+            "error": null
+          },
+          {
+            "turn": 2,
+            "prompt": "How do I find the derivative of x squared?",
+            "response_preview": "To find the derivative of $x^2$ (which is often written as $x^2$), you can use the **Power Rule**. This is one of the most fundamental rules in differentiation.\n\n### The Power Rule\nThe Power Rule stat",
+            "tokens": 494,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": false,
+              "answer_contains": true
+            },
+            "pass": false,
+            "error": null
+          },
+          {
+            "turn": 3,
+            "prompt": "What about the chain rule?",
+            "response_preview": "The **Chain Rule** is one of the most important and powerful tools in calculus. It allows you to differentiate composite functions\u2014functions \"inside\" other functions.\n\n### The Concept\nImagine you have",
+            "tokens": 500,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": true
+            },
+            "pass": true,
+            "error": null
+          }
+        ],
+        "pass": false
+      },
+      {
+        "id": "M2",
+        "name": "code_review",
+        "mode": "think-off",
+        "turns": [
+          {
+            "turn": 1,
+            "prompt": "I have a list of numbers and I want to find duplicates. What approach should I use?",
+            "response_preview": "To efficiently find duplicates in a list of numbers, the best approach depends on your priorities for **speed**, **memory usage**, and whether you need to identify **which** specific numbers are dupli",
+            "tokens": 500,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": true
+            },
+            "pass": true,
+            "error": null
+          },
+          {
+            "turn": 2,
+            "prompt": "Can you show me that in Python?",
+            "response_preview": "Here are three common ways to find duplicates in Python, ranging from the simplest built-in method to more flexible manual implementations.\n\n### Method 1: Using Sets (Fastest & Easiest)\nThis is the mo",
+            "tokens": 500,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": true,
+              "contains_code": true
+            },
+            "pass": true,
+            "error": null
+          },
+          {
+            "turn": 3,
+            "prompt": "What's the time complexity of that solution?",
+            "response_preview": "The time complexity depends on which specific part of the code you are looking at, as I provided three different approaches above. Here is the breakdown:\n\n### 1. The Set-Based Approach (`set(numbers)`",
+            "tokens": 500,
+            "checks": {
+              "non_empty": true,
+              "no_repetition": false
+            },
+            "pass": false,
+            "error": null
+          }
+        ],
+        "pass": false
+      },
+      {
+        "id": "M3",
+        "name": "context_carry",
+        "mode": "think-off",
+        "turns": [
+          {
+            "turn": 1,
+            "prompt": "My name is Alice and I work at Google.",
+            "response_preview": "Hello, Alice! It's great to meet you. Working at Google must be an exciting experience\u2014what kind of role do you hold there? If you'd like to chat about tech, productivity tips, or anything else on you",
+            "tokens": 56,
+            "checks": {
+              "non_empty": true
+            },
+            "pass": true,
+            "error": null
+          },
+          {
+            "turn": 2,
+            "prompt": "What company do I work at?",
+            "response_preview": "You work at **Google**! \ud83c\udf1f  \n\nThat\u2019s a fantastic place to be\u2014you\u2019re part of one of the world\u2019s most innovative companies known for its groundbreaking products (like Android, Gmail, Chrome) and its focu",
+            "tokens": 65,
+            "checks": {
+              "non_empty": true,
+              "answer_contains": true
+            },
+            "pass": true,
+            "error": null
+          },
+          {
+            "turn": 3,
+            "prompt": "What is my name?",
+            "response_preview": "Your name is **Alice**. \u2728\n\nI remember you introduced yourself right at the start of our conversation: *\"My name is Alice and I work at Google.\"* So, that's who you are!\n\nIs there anything specific you",
+            "tokens": 79,
+            "checks": {
+              "non_empty": true,
+              "answer_contains": true
+            },
+            "pass": true,
+            "error": null
+          }
+        ],
+        "pass": true
+      }
+    ]
+  }
+}

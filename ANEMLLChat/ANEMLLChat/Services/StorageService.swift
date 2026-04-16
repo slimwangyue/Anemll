@@ -493,8 +493,10 @@ actor StorageService {
         try ensureDirectoryExists(appDataRootDirectory)
 
         // Only save: (a) not a hardcoded default, AND (b) locally imported/linked or downloaded
+        // Bundled models are discovered at runtime and should not be persisted.
         let customModels = models.filter { model in
             guard !ModelInfo.defaultModels.contains(where: { $0.id == model.id }) else { return false }
+            guard model.sourceKind != .bundled else { return false }
             return model.sourceKind == .localImported
                 || model.sourceKind == .localLinked
                 || model.isDownloaded

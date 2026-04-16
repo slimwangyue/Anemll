@@ -1,0 +1,78 @@
+Sampling Sweep Results - 2026-04-15T13:06:55.945081
+================================================================================
+
+Config                                         AvgRep  MaxRep Loops   MTAvg   MTMax MTLoop  Coher  Topic
+--------------------------------------------------------------------------------------------------------
+rep_1.0_freq_0.05_think_off                    0.0056  0.0169     0  0.0000  0.0000      0  1.000  1.000
+rep_1.02_freq_0.05_think_off                   0.0000  0.0000     0  0.0142  0.0426      0  1.000  1.000
+rep_1.05_freq_0.05_think_off                   0.0053  0.0158     0  0.0000  0.0000      0  1.000  1.000
+rep_1.08_freq_0.05_think_off                   0.0000  0.0000     0  0.0060  0.0181      0  1.000  1.000
+rep_1.1_freq_0.05_think_off                    0.0000  0.0000     0  0.0000  0.0000      0  1.000  1.000
+rep_1.12_freq_0.05_think_off                   0.0000  0.0000     0  0.0067  0.0201      0  1.000  1.000
+
+
+--- rep_1.0_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.0, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0056 max_rep=0.0169 loops=0
+  P1_en_long       tok= 250 rep=0.017 ng5=  1 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.000 ng5=  0 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]
+
+--- rep_1.02_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.02, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  P1_en_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0142 max_rep=0.0426 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.043 ng5=  2 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]
+
+--- rep_1.05_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.05, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0053 max_rep=0.0158 loops=0
+  P1_en_long       tok= 250 rep=0.016 ng5=  1 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.000 ng5=  0 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]
+
+--- rep_1.08_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.08, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  P1_en_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0060 max_rep=0.0181 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.018 ng5=  1 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]
+
+--- rep_1.1_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.1, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  P1_en_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.000 ng5=  0 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]
+
+--- rep_1.12_freq_0.05_think_off (think-off) ---
+Params: {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "presence_penalty": 1.5, "repetition_penalty": 1.12, "frequency_penalty": 0.05}
+Single-turn: avg_rep=0.0000 max_rep=0.0000 loops=0
+  P1_en_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P2_zh_long       tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+  P3_rep_stress    tok= 250 rep=0.000 ng5=  0 loop= 0 [OK]
+Multi-turn: avg_rep=0.0067 max_rep=0.0201 loops=0
+  Turn 1 tok= 200 rep=0.000 ng5=  0 [OK]
+  Turn 2 tok= 250 rep=0.020 ng5=  1 [OK]
+  Turn 3 tok= 300 rep=0.000 ng5=  0 [OK]

@@ -78,6 +78,7 @@
 				A1000009000000000000000A /* Sources */,
 				A1000005000000000000000A /* Frameworks */,
 				A100000A000000000000000A /* Resources */,
+				A1000030000000000000000A /* Create Models.bundle */,
 			);
 			buildRules = (
 			);
@@ -144,6 +145,25 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		A1000030000000000000000A /* Create Models.bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Create Models.bundle";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Create Models.bundle in the app's Resources with symlinks to model directories\nBUNDLE_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/Resources/Models.bundle\"\nmkdir -p \"${BUNDLE_DIR}\"\n\n# Source directory containing converted models (two levels up from ANEMLLChat/)\nMODEL_ROOT=\"${PROJECT_DIR}/..\"\n\n# Symlink each model folder that has a meta.yaml\nfor MODEL_DIR in \"${MODEL_ROOT}\"/qwen3_5_v4_lut4_p2 \"${MODEL_ROOT}\"/qwen3_5_2b_v4_lut4; do\n  if [ -f \"${MODEL_DIR}/meta.yaml\" ]; then\n    NAME=$(basename \"${MODEL_DIR}\")\n    ln -sfn \"${MODEL_DIR}\" \"${BUNDLE_DIR}/${NAME}\"\n    echo \"Linked model: ${NAME}\"\n  fi\ndone\n\necho \"Models.bundle created at ${BUNDLE_DIR}\"\nls -la \"${BUNDLE_DIR}\"\n";
+		};
 		A1000020000000000000000A /* Set Build Number from Git */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

@@ -1,0 +1,55 @@
+Qwen3.5 Validation Report
+Generated: 2026-04-15T05:25:51.693460
+Server: http://localhost:8080
+======================================================================
+
+── QUALITY ──
+
+  Results: 12/22 passed
+
+  ✗ G1 general_chat (2.5 tok/s)
+    Failed checks: eos_stop
+    Response: Python and Rust are two of the most popular programming languages today, but they serve very different purposes and oper...
+  ✓ G2 general_chat (2.5 tok/s)
+  ✗ G3 general_chat (7.1 tok/s)
+    Failed checks: eos_stop
+    Response: The **French Revolution** (1789–1799) was a profound and transformative period in French history that fundamentally dism...
+  ✓ G4 general_chat (3.9 tok/s)
+  ✓ R1 reasoning (7.0 tok/s)
+  ✓ R2 reasoning (5.6 tok/s)
+  ✓ R3 reasoning (7.0 tok/s)
+  ✗ R4 reasoning (6.9 tok/s)
+    Failed checks: eos_stop
+    Response: To find the single heavier ball among 8 balls using a balance scale only **twice**, you must use a strategy of **groupin...
+  ✓ C1 coding (7.0 tok/s)
+  ✗ C2 coding (6.9 tok/s)
+    Failed checks: eos_stop
+    Response: Here is a robust implementation of Binary Search in Python, focusing on clarity, efficiency, and comprehensive edge case...
+  ✗ C3 coding (7.1 tok/s)
+    Failed checks: eos_stop
+    Response: The issue with your code lies in how Python handles **list indexing** when you modify a list while iterating over it.
+
+#...
+  ✓ I1 instruction_following (3.7 tok/s)
+  ✓ I2 instruction_following (5.3 tok/s)
+  ✓ I3 instruction_following (6.0 tok/s)
+  ✗ L1 long_response (6.8 tok/s)
+    Failed checks: eos_stop
+    Response: Here is a detailed comparison between **TCP (Transmission Control Protocol)** and **UDP (User Datagram Protocol)**, two ...
+  ✗ L2 long_response (2.3 tok/s)
+    Failed checks: eos_stop
+    Response: The lifecycle of an HTTP request is a fascinating journey involving networking protocols, operating system stacks, and a...
+  ✓ E1 edge_cases (3.0 tok/s)
+  ✓ E2 edge_cases (0.5 tok/s)
+  ✗ E3 edge_cases (7.0 tok/s)
+    Failed checks: eos_stop
+    Response: Here is a detailed analysis and summary of the provided passage regarding the evolution and current state of Artificial ...
+  ✗ M1 math_tutoring
+  ✗ M2 code_review
+  ✓ M3 context_carry
+
+======================================================================
+SUMMARY
+
+  quality: 12/22
+

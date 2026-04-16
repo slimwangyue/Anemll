@@ -12,6 +12,7 @@ enum ModelSourceKind: String, Codable, Sendable {
     case huggingFace
     case localImported
     case localLinked
+    case bundled
 }
 
 /// Information about an available LLM model

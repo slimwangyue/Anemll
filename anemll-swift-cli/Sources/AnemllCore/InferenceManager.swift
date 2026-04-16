@@ -888,10 +888,10 @@ private typealias Float16 = Float
                     shape: [1, 1, 1, NSNumber(value: contextLength)],
                     dataType: .float16
                 )
-                // Initialize causal mask with -inf
+                // Initialize causal mask with -65504 (fp16 min) for ANE safety
                 let ptr = argmaxCausalMask!.dataPointer.assumingMemoryBound(to: Float16.self)
                 for i in 0..<contextLength {
-                    ptr[i] = Float16(-Float.infinity)
+                    ptr[i] = Float16(-65504.0)
                 }
             } else {
                 // IOSurface-backed fp16 pixel buffer for ANE synchronization
@@ -914,12 +914,12 @@ private typealias Float16 = Float
                 argmaxCausalMaskBuffer = mBuf
                 argmaxCausalMask = MLMultiArray(pixelBuffer: mBuf, shape: [1, 1, 1, NSNumber(value: contextLength)])
 
-                // Initialize causal mask with -inf
+                // Initialize causal mask with -65504 (fp16 min) for ANE safety
                 CVPixelBufferLockBaseAddress(mBuf, [])
                 if let baseAddress = CVPixelBufferGetBaseAddress(mBuf) {
                     let ptr = baseAddress.assumingMemoryBound(to: Float16.self)
                     for i in 0..<contextLength {
-                        ptr[i] = Float16(-Float.infinity)
+                        ptr[i] = Float16(-65504.0)
                     }
                 }
                 CVPixelBufferUnlockBaseAddress(mBuf, [])
@@ -1055,7 +1055,7 @@ private typealias Float16 = Float
         let ptr = mask.dataPointer.assumingMemoryBound(to: Float16.self)
 
         // Fill entire array with -inf first (fast memset-like operation)
-        let negInf = Float16(-Float.infinity)
+        let negInf = Float16(-65504.0)  // fp16 min for ANE safety (not -inf)
         for i in 0..<totalCount {
             ptr[i] = negInf
         }
@@ -1637,7 +1637,9 @@ private typealias Float16 = Float
 
         // Use direct pointer access for performance
         let ptr = mask.dataPointer.assumingMemoryBound(to: Float16.self)
-        let negInf = Float16(-Float.infinity)
+        // Use -65504 (fp16 representable min) instead of -inf for ANE compatibility
+        // -inf can produce NaN in attention softmax on ANE, while -65504 is safe
+        let negInf = Float16(-65504.0)
         let zero = Float16(0.0)
 
         // Fill mask with -inf by default
@@ -1757,9 +1759,9 @@ private typealias Float16 = Float
                 dataType: .float16
             )
             
-            // Fill with -inf by default
+            // Fill with -65504 (fp16 min) for ANE compatibility instead of -inf
             for i in 0..<batchCausalMask.count {
-                batchCausalMask[i] = NSNumber(value: Float(-Float.infinity))
+                batchCausalMask[i] = NSNumber(value: Float(-65504.0))
             }
             
             // Set causal attention pattern
@@ -2022,9 +2024,9 @@ private typealias Float16 = Float
                 dataType: .float16
             )
 
-            // Fill with -inf by default
+            // Fill with -65504 (fp16 min) for ANE compatibility instead of -inf
             for i in 0..<batchCausalMask.count {
-                batchCausalMask[i] = NSNumber(value: Float(-Float.infinity))
+                batchCausalMask[i] = NSNumber(value: Float(-65504.0))
             }
 
             // Set causal attention pattern
@@ -2155,7 +2157,7 @@ private typealias Float16 = Float
             for j in 0..<contextLength {
                 singleMask[[0, 0, 0, j] as [NSNumber]] = j <= batchPos
                     ? NSNumber(value: Float(0.0))
-                    : NSNumber(value: Float(-Float.infinity))
+                    : NSNumber(value: Float(-65504.0))
             }
 
             // Current position
@@ -2198,9 +2200,9 @@ private typealias Float16 = Float
                 CVPixelBufferLockBaseAddress(maskBuffer, [])
                 if let baseAddress = CVPixelBufferGetBaseAddress(maskBuffer) {
                     let ptr = baseAddress.assumingMemoryBound(to: Float16.self)
-                    // Reset mask to -inf and set visible positions
+                    // Reset mask to -65504 (fp16 min) and set visible positions
                     for i in 0..<contextLength {
-                        ptr[i] = Float16(-Float.infinity)
+                        ptr[i] = Float16(-65504.0)
                     }
                     for j in 0..<min(contextPos, contextLength) {
                         ptr[j] = Float16(0.0)
@@ -2211,7 +2213,7 @@ private typealias Float16 = Float
             } else if let maskArray = argmaxCausalMask {
                 let ptr = maskArray.dataPointer.assumingMemoryBound(to: Float16.self)
                 for i in 0..<contextLength {
-                    ptr[i] = Float16(-Float.infinity)
+                    ptr[i] = Float16(-65504.0)
                 }
                 for j in 0..<min(contextPos, contextLength) {
                     ptr[j] = Float16(0.0)
@@ -3375,20 +3377,12 @@ private typealias Float16 = Float
             generatedTokenHistory.removeAll()
         }
 
-        // Reset KV cache state for new conversation turn
-        // This ensures each generateResponse call starts fresh, which is required
-        // when the full conversation is re-tokenized for each turn
-        if let chunks = ffnChunks, !chunks.isEmpty {
-            // For monolithic models, create state from inferModel (matching initState behavior)
-            // This ensures state compatibility when switching between prefill and infer functions
-            if isMonolithic {
-                state = chunks[0].inferModel.makeState()
-            } else {
-                state = chunks[0].prefillModel.makeState()
-            }
-            lastArgmaxPosition = -1  // Reset argmax position tracking
-            lastPrefillPredictedToken = nil  // Reset prefill prediction cache
-        }
+        // Reset ALL state for new conversation turn:
+        // shared state, per-chunk KV cache states, and linear recurrent states.
+        // This is required because the full conversation is re-tokenized and
+        // re-prefilled from scratch each turn.
+        resetStateForPrefill()
+        lastPrefillPredictedToken = nil  // Reset prefill prediction cache
 
         do {
 
@@ -3468,8 +3462,9 @@ private typealias Float16 = Float
                     // Call the window shift callback to notify listeners
                     onWindowShift?()
                     
-                    // Reset state and run prefill on shifted content
-                    state = ffnChunks[0].prefillModel.makeState()
+                    // Reset ALL state (shared + per-chunk KV cache + linear states)
+                    // before re-prefilling on shifted content
+                    resetStateForPrefill()
                     currentPos = try await runPrefill(on: &contextTokens, contextPos: newSize, tokenizer: tokenizer)
                     
                     if debugLevel >= 2 {
