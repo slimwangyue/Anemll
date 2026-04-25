@@ -1,0 +1,92 @@
+[
+  {
+    "name": "FP16_ref",
+    "desc": "FP16 reference (no quantization)",
+    "cos_sim": 1.0,
+    "mse": 0.0,
+    "max_err": 0.0,
+    "size_mb": 853.3953161239624,
+    "predict_ms": 17.11533399999965,
+    "palettize_time_s": 0
+  },
+  {
+    "name": "E0_baseline",
+    "desc": "Current D2: LUT4 gs=4, F-layer attn Q/K/V/O \u2192 FP16",
+    "cos_sim": 0.9490376792636183,
+    "mse": 0.042900959959195004,
+    "max_err": 0.9156322479248047,
+    "size_mb": 253.7475061416626,
+    "predict_ms": 14.648750000020527,
+    "palettize_time_s": 137.70263290405273
+  },
+  {
+    "name": "E2_ssm_fp16",
+    "desc": "D2 + ssm_alpha/ssm_beta \u2192 FP16",
+    "cos_sim": 0.9492672790445957,
+    "mse": 0.04273334739646088,
+    "max_err": 0.8983840942382812,
+    "size_mb": 254.44792079925537,
+    "predict_ms": 14.545584000018152,
+    "palettize_time_s": 137.16181707382202
+  },
+  {
+    "name": "E3_mixed_lut6",
+    "desc": "D2 + LUT6 for ssm_qkv/ssm_z/ssm_out",
+    "cos_sim": 0.9676318825708916,
+    "mse": 0.027349081692807434,
+    "max_err": 0.7452392578125,
+    "size_mb": 277.0912799835205,
+    "predict_ms": 14.639208000062354,
+    "palettize_time_s": 214.3407588005066
+  },
+  {
+    "name": "E5_gs2_ssm",
+    "desc": "D2 + group_size=2 for ssm_qkv/ssm_z/ssm_out",
+    "cos_sim": 0.9496985893474046,
+    "mse": 0.042064192554875035,
+    "max_err": 0.9173049926757812,
+    "size_mb": 254.0287561416626,
+    "predict_ms": 15.317750000008346,
+    "palettize_time_s": 161.06266808509827
+  },
+  {
+    "name": "E23_fp16+lut6",
+    "desc": "D2 + ssm_alpha/beta FP16 + ssm_proj LUT6",
+    "cos_sim": 0.9679677164924729,
+    "mse": 0.027071067138047057,
+    "max_err": 0.7277450561523438,
+    "size_mb": 277.7916955947876,
+    "predict_ms": 14.15412500000457,
+    "palettize_time_s": 214.62957072257996
+  },
+  {
+    "name": "E25_fp16+gs2",
+    "desc": "D2 + ssm_alpha/beta FP16 + ssm_proj gs=2",
+    "cos_sim": 0.9500285398034989,
+    "mse": 0.0417993521081371,
+    "max_err": 0.9138069152832031,
+    "size_mb": 254.72917079925537,
+    "predict_ms": 15.25949999995646,
+    "palettize_time_s": 161.0010461807251
+  },
+  {
+    "name": "E35_lut6+gs2",
+    "desc": "D2 + ssm_proj LUT6 gs=2",
+    "cos_sim": 0.967734726397711,
+    "mse": 0.027281688627948594,
+    "max_err": 0.7221832275390625,
+    "size_mb": 278.2162809371948,
+    "predict_ms": 15.502125000011802,
+    "palettize_time_s": 274.70802211761475
+  },
+  {
+    "name": "E235_all",
+    "desc": "D2 + ssm_alpha/beta FP16 + ssm_proj LUT6 gs=2",
+    "cos_sim": 0.9680750324773675,
+    "mse": 0.027005225913671892,
+    "max_err": 0.7154045104980469,
+    "size_mb": 278.9167003631592,
+    "predict_ms": 15.2821250001125,
+    "palettize_time_s": 274.00138902664185
+  }
+]

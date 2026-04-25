@@ -1,0 +1,72 @@
+[
+  {
+    "name": "FP16_ref",
+    "desc": "FP16 reference (no quantization)",
+    "cos_sim": 1.0,
+    "mse": 0.0,
+    "max_err": 0.0,
+    "size_mb": 853.3953161239624,
+    "predict_ms": 17.41758299999674,
+    "palettize_time_s": 0
+  },
+  {
+    "name": "E0_baseline",
+    "desc": "Current D2: LUT4 gs=4, F-layer attn Q/K/V/O \u2192 FP16",
+    "cos_sim": 0.9490376792636183,
+    "mse": 0.042900959959195004,
+    "max_err": 0.9156322479248047,
+    "size_mb": 253.7475061416626,
+    "predict_ms": 14.518584000001056,
+    "palettize_time_s": 147.2793140411377
+  },
+  {
+    "name": "E1_per_ch_scale",
+    "desc": "D2 + enable_per_channel_scale=True",
+    "cos_sim": 0.8763597393088066,
+    "mse": 0.10282672926890746,
+    "max_err": 1.599247694015503,
+    "size_mb": 3457.2709608078003,
+    "predict_ms": 41.091584000014336,
+    "palettize_time_s": 526.1670978069305
+  },
+  {
+    "name": "E2_ssm_fp16",
+    "desc": "D2 + ssm_alpha/ssm_beta \u2192 FP16 (most sensitive, tiny overhead)",
+    "cos_sim": 0.9492672790445957,
+    "mse": 0.04273334739646088,
+    "max_err": 0.8983840942382812,
+    "size_mb": 254.44792079925537,
+    "predict_ms": 14.50079200003529,
+    "palettize_time_s": 138.87025475502014
+  },
+  {
+    "name": "E3_mixed_lut6",
+    "desc": "D2 + LUT6 for ssm_qkv/ssm_z/ssm_out (rest LUT4)",
+    "cos_sim": 0.9676318825708916,
+    "mse": 0.027349081692807434,
+    "max_err": 0.7452392578125,
+    "size_mb": 277.0912799835205,
+    "predict_ms": 14.493916999981593,
+    "palettize_time_s": 215.63917326927185
+  },
+  {
+    "name": "E4_skm_proxy",
+    "desc": "D2 + per_channel_scale=True + num_workers=4 (SKM proxy)",
+    "cos_sim": 0.8763597393088066,
+    "mse": 0.10282672926890746,
+    "max_err": 1.599247694015503,
+    "size_mb": 3457.2709608078003,
+    "predict_ms": 41.876124999816966,
+    "palettize_time_s": 227.44409799575806
+  },
+  {
+    "name": "E5_gs2_ssm",
+    "desc": "D2 + group_size=2 for ssm_qkv/ssm_z/ssm_out (rest gs=4)",
+    "cos_sim": 0.9496878580636502,
+    "mse": 0.04207435140462507,
+    "max_err": 0.9173774719238281,
+    "size_mb": 254.0287561416626,
+    "predict_ms": 15.16420900020421,
+    "palettize_time_s": 164.24691200256348
+  }
+]

@@ -637,6 +637,14 @@ class ChatEngine:
 
         self._detect_shapes()
 
+        # Auto-detect prefill batch size from embed_prefill model
+        # (overrides module-level BATCH_SIZE if model was compiled differently)
+        detected_bs = self._detect_prefill_batch_size()
+        if detected_bs is not None and detected_bs != BATCH_SIZE:
+            print(f"[engine] ⚠️ Prefill batch size auto-detected={detected_bs} "
+                  f"(overriding module BATCH_SIZE={BATCH_SIZE})")
+        self._prefill_bs = detected_bs if detected_bs is not None else BATCH_SIZE
+
         # Pre-allocate reusable buffers to avoid per-token allocation
         self._tok_buf = np.zeros((1, 1), dtype=np.int32)
         self._mask_buf = np.full(
@@ -644,20 +652,21 @@ class ChatEngine:
         self._pos_buf = np.zeros(1, dtype=np.int32)
         self._rope_buf = np.zeros(1, dtype=np.int32)  # logical RoPE position
 
-        # Pre-allocate batch prefill buffers
-        self._batch_tok_buf = np.zeros((1, BATCH_SIZE), dtype=np.int32)
-        self._batch_embed_buf = np.zeros((1, BATCH_SIZE), dtype=np.int32)
+        # Pre-allocate batch prefill buffers using detected batch size
+        bs = self._prefill_bs
+        self._batch_tok_buf = np.zeros((1, bs), dtype=np.int32)
+        self._batch_embed_buf = np.zeros((1, bs), dtype=np.int32)
         self._valid_len_buf = np.zeros((1,), dtype=np.int32)
         self._batch_mask_buf = np.full(
-            (1, 1, BATCH_SIZE, self.ctx), -65504.0, dtype=np.float16)
-        self._batch_pos_buf = np.zeros(BATCH_SIZE, dtype=np.int32)
+            (1, 1, bs, self.ctx), -65504.0, dtype=np.float16)
+        self._batch_pos_buf = np.zeros(bs, dtype=np.int32)
         self._batch_cur_buf = np.zeros(1, dtype=np.int32)
 
         self._reset_states()
         self.ready = True
         mode = "combined-dedup" if self.use_combined else "separate"
-        prefill_mode = f"batch-{BATCH_SIZE}" if self.has_prefill else "sequential"
-        print(f"[engine] Ready! CTX={self.ctx}, BATCH={BATCH_SIZE}, "
+        prefill_mode = f"batch-{self._prefill_bs}" if self.has_prefill else "sequential"
+        print(f"[engine] Ready! CTX={self.ctx}, BATCH={self._prefill_bs}, "
               f"crossover={PREFILL_CROSSOVER}, "
               f"mode={mode}, prefill={prefill_mode}, "
               f"stop_ids={self.stop_ids}")
@@ -773,6 +782,73 @@ class ChatEngine:
         if not self.kv_state_names:
             self.kv_state_names = ['k_cache', 'v_cache']  # fallback
         print(f"    KV state names: {self.kv_state_names}")
+
+    def _detect_prefill_batch_size(self):
+        """Auto-detect prefill batch size from model specs.
+
+        Tries embed_prefill first, then falls back to prefill chunk models,
+        then to reading .mlpackage spec from disk.
+        Returns detected batch size or None if detection fails.
+        """
+        # Strategy 1: Try embed_prefill model (works for .mlpackage)
+        try:
+            if hasattr(self, 'embed_prefill') and self.embed_prefill is not None:
+                spec = self.embed_prefill.get_spec()
+                fn_inputs = None
+                if hasattr(spec.description, 'functions'):
+                    for fn in spec.description.functions:
+                        if fn.name in ('embed_prefill', 'embedding_prefill'):
+                            fn_inputs = fn.input
+                            break
+                if fn_inputs is None:
+                    fn_inputs = spec.description.input
+                for inp in fn_inputs:
+                    if inp.name == 'input_ids':
+                        bs = inp.type.multiArrayType.shape[1]
+                        print(f"    prefill batch_size auto-detected (embed_prefill): {bs}")
+                        return bs
+        except Exception:
+            pass
+
+        # Strategy 2: Try prefill chunk model (combined .mlpackage with functions)
+        try:
+            if hasattr(self, 'prefills') and self.prefills and self.prefills[0] is not None:
+                spec = self.prefills[0].get_spec()
+                fn_inputs = None
+                if hasattr(spec.description, 'functions'):
+                    for fn in spec.description.functions:
+                        if fn.name == 'prefill':
+                            fn_inputs = fn.input
+                            break
+                if fn_inputs is None:
+                    fn_inputs = spec.description.input
+                for inp in fn_inputs:
+                    if inp.name == 'hidden_states':
+                        shp = tuple(inp.type.multiArrayType.shape)
+                        if len(shp) >= 2:
+                            bs = shp[1]
+                            print(f"    prefill batch_size auto-detected (chunk0 prefill): {bs}")
+                            return bs
+        except Exception:
+            pass
+
+        # Strategy 3: Read embed_prefill.mlpackage spec from disk
+        try:
+            import coremltools as ct
+            for name in ("embed_prefill.mlpackage",):
+                path = os.path.join(self.model_dir, name)
+                if os.path.exists(path):
+                    spec = ct.utils.load_spec(path)
+                    for inp in spec.description.input:
+                        if inp.name == 'input_ids':
+                            bs = inp.type.multiArrayType.shape[1]
+                            print(f"    prefill batch_size auto-detected (spec file): {bs}")
+                            return bs
+        except Exception:
+            pass
+
+        print("    prefill batch_size: could not auto-detect, using module default")
+        return None
 
     def _reset_states(self):
         """Reset KV cache, linear states, and position to zero."""
@@ -975,14 +1051,18 @@ class ChatEngine:
         Updates self.pos to block_start + len(token_ids).
         """
         valid_len = len(token_ids)
-        assert 1 <= valid_len <= BATCH_SIZE
+        assert 1 <= valid_len <= self._prefill_bs
 
-        # Batch embedding: (1, BATCH_SIZE)  — pad with token 0
+        # Batch embedding: (1, _prefill_bs)  — pad with token 0
         input_ids = self._batch_tok_buf
         input_ids[0, :] = 0
         input_ids[0, :valid_len] = token_ids
         hidden = list(
             self.embed_prefill.predict({"input_ids": input_ids}).values())[0]
+        # Zero-fill padding hidden states to prevent padding embeddings from
+        # contributing any numerical signal through the network.
+        if valid_len < self._prefill_bs:
+            hidden[:, valid_len:, :] = 0.0
 
         # Build causal mask: (1, 1, BATCH_SIZE, CTX)
         # Valid positions get normal causal mask; padding rows get all -inf.
@@ -990,7 +1070,12 @@ class ChatEngine:
         mask[:, :, :, :] = -65504.0
         for i in range(valid_len):
             mask[0, 0, i, :block_start + i + 1] = 0
-        # Padding rows (valid_len..BATCH_SIZE-1) stay all -inf → no attention.
+        # Padding rows: unmask position 0 so softmax sees at least one finite
+        # value.  Without this, softmax(all -inf) = 0/0 = NaN, which propagates
+        # through residual connections into the linear-attention recurrent state
+        # (NaN * 0 = NaN in IEEE 754), corrupting all subsequent decode tokens.
+        for i in range(valid_len, self._prefill_bs):
+            mask[0, 0, i, 0] = 0.0
 
         pos_ids = self._batch_pos_buf
         pos_ids[:valid_len] = np.arange(
@@ -1130,20 +1215,30 @@ class ChatEngine:
         last_next = None
         t_total = time.time()
         n_batched = 0
-        # Batch prefill requires a full BATCH_SIZE state write, so we
-        # can only use it while pos + BATCH_SIZE <= ctx.  When fewer
-        # than BATCH_SIZE slots remain the sequential fallback handles
+        bs = self._prefill_bs
+        # Batch prefill requires a full bs state write, so we
+        # can only use it while pos + bs <= ctx.  When fewer
+        # than bs slots remain the sequential fallback handles
         # the rest token-by-token.
         use_batch = (self.has_prefill
                      and n_total >= PREFILL_CROSSOVER
-                     and self.pos + BATCH_SIZE <= self.ctx)
+                     and self.pos + bs <= self.ctx)
 
         # ── Batch prefill path ──
+        # Only FULL blocks (valid_len == bs) are processed via batch prefill.
+        # Partial tail blocks fall through to sequential because the batch
+        # prefill computation with heavy padding (>50% zeros) diverges
+        # numerically from sequential on both CPU and ANE, causing wrong
+        # output for some prompts.
         if use_batch:
-            chunks = _chunk_tokens(prompt_tokens, BATCH_SIZE)
+            chunks = _chunk_tokens(prompt_tokens, bs)
             for block in chunks:
                 block_len = len(block)
-                if self.pos + BATCH_SIZE > self.ctx:
+                if block_len < bs:
+                    # Tail (partial) block — let sequential fallback handle
+                    # it to avoid padding-induced numerical divergence.
+                    break
+                if self.pos + bs > self.ctx:
                     # Not enough state slots for a full block — hand
                     # the remaining tokens to the sequential fallback.
                     break
@@ -1152,8 +1247,7 @@ class ChatEngine:
                 elapsed = time.time() - t0
                 tps = block_len / max(elapsed, 1e-9)
                 n_batched += block_len
-                tag = "full" if block_len == BATCH_SIZE else f"tail({block_len})"
-                print(f"[prefill] batch-{tag}: {block_len} tok, "
+                print(f"[prefill] batch-full: {block_len} tok, "
                       f"{elapsed*1000:.0f}ms ({tps:.0f} tok/s), "
                       f"pos={self.pos}/{self.ctx}")
 

@@ -166,18 +166,27 @@ def get_v4_compute_precision(model, chunk_idx):
 # Attention weight families to keep in FP16 (not quantized to LUT4)
 D2_FP16_ATTN_FAMILIES = ["attn_q", "attn_kv", "attn_o"]
 
+# ── E235: D2 + ssm_alpha/beta FP16 + SSM projections LUT6 gs=2 ──
+# Best combined quantization policy from chunk-1 experiments.
+# +1.9% cos_sim vs baseline, +25 MB/chunk, zero speed impact.
+E235_FP16_FAMILIES = ["attn_q", "attn_kv", "attn_o", "ssm_alpha", "ssm_beta"]
+E235_LUT6_GS2_FAMILIES = ["ssm_qkv", "ssm_z", "ssm_out"]
 
-def _apply_selective_lut4(mlmodel, fp16_families, lut_bits=4, per_channel=FFN_PER_CHANNEL):
+
+def _apply_selective_lut4(mlmodel, fp16_families, lut_bits=4, per_channel=FFN_PER_CHANNEL,
+                         lut6_gs2_families=None):
     """Apply LUT palettization while keeping specified weight families in FP16.
 
     Uses discover_weight_ops from fp16_ablation to identify weight ops
     and skip palettization for ops matching fp16_families.
+    Optionally applies LUT6 gs=2 to specified families (E235 policy).
     """
     import warnings
     import coremltools.optimize as cto
     from fp16_ablation import _build_selective_lut_config
     opt_config = _build_selective_lut_config(
         mlmodel, fp16_families, lut_bits=lut_bits, per_channel=per_channel,
+        lut6_gs2_families=lut6_gs2_families,
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -325,7 +334,7 @@ def export_lm_head_nosplit(model, out_dir, skip_existing, compute_precision="flo
 
 def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_prefill=False,
                       lut_bits_override=None, per_channel_override=None, compute_precision="float16",
-                      v4_precision=False, selective_fp32=False, fp16_attn=False):
+                      v4_precision=False, selective_fp32=False, fp16_attn=False, e235=False):
     lut_bits = lut_bits_override if lut_bits_override is not None else LUT_BITS
     ffn_pc = per_channel_override if per_channel_override is not None else FFN_PER_CHANNEL
     label = f"LUT{lut_bits}"
@@ -355,9 +364,13 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             base_cp = compute_precision
 
         # D2: selective LUT4 — keep attn Q/K/V/O in FP16 for F-layer chunks
-        use_selective_lut = fp16_attn and has_f_layers
+        # E235: D2 + ssm_alpha/beta FP16 + SSM projections LUT6 gs=2 (all chunks)
+        use_selective_lut = (fp16_attn and has_f_layers) or e235
         if use_selective_lut:
-            cp_label += "+D2"
+            if e235:
+                cp_label += "+E235"
+            else:
+                cp_label += "+D2"
 
         def _make_converter():
             # When using D2 selective LUT, skip built-in palettization
@@ -381,8 +394,14 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             ml = conv.convert_part_2(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                      override_start_layer=sl, override_end_layer=el)
             if use_selective_lut:
-                print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
-                ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
+                if e235:
+                    fp16_fams = E235_FP16_FAMILIES if has_f_layers else ["ssm_alpha", "ssm_beta"]
+                    print(f"    [E235] FP16: {fp16_fams}, LUT6 gs=2: {E235_LUT6_GS2_FAMILIES}, rest → LUT{lut_bits}")
+                    ml = _apply_selective_lut4(ml, fp16_fams, lut_bits=lut_bits, per_channel=ffn_pc,
+                                              lut6_gs2_families=E235_LUT6_GS2_FAMILIES)
+                else:
+                    print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
+                    ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
             ml.save(dec_path)
             del ml, conv; gc.collect()
             print(f"  Saved decode chunk {ci} ({time.time()-t0:.1f}s)")
@@ -409,8 +428,14 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
                 ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                                  override_start_layer=sl, override_end_layer=el)
             if use_selective_lut:
-                print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
-                ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
+                if e235:
+                    fp16_fams = E235_FP16_FAMILIES if has_f_layers else ["ssm_alpha", "ssm_beta"]
+                    print(f"    [E235] FP16: {fp16_fams}, LUT6 gs=2: {E235_LUT6_GS2_FAMILIES}, rest → LUT{lut_bits}")
+                    ml = _apply_selective_lut4(ml, fp16_fams, lut_bits=lut_bits, per_channel=ffn_pc,
+                                              lut6_gs2_families=E235_LUT6_GS2_FAMILIES)
+                else:
+                    print(f"    [D2] Applying selective LUT{lut_bits}: attn Q/K/V/O → FP16, rest → LUT{lut_bits}")
+                    ml = _apply_selective_lut4(ml, D2_FP16_ATTN_FAMILIES, lut_bits=lut_bits, per_channel=ffn_pc)
             ml.save(pf_path)
             del ml, conv; gc.collect()
             print(f"  Saved {pf_desc} ({time.time()-t0:.1f}s)")
@@ -448,6 +473,8 @@ def main():
                         help="D2: keep F-layer attention Q/K/V/O in FP16, rest LUT4 (default: ON)")
     parser.add_argument("--no-d2", dest="fp16_attn", action="store_false",
                         help="Disable D2 (all FFN weights quantized to LUT)")
+    parser.add_argument("--e235", action="store_true", default=False,
+                        help="E235: D2 + ssm_alpha/beta FP16 + SSM proj LUT6 gs=2 (best quality)")
     parser.add_argument("--selective-fp32", action="store_true",
                         help="Selective fp32: keep softmax/exp/rsqrt/reduce in fp32, rest fp16 for ANE")
     parser.add_argument("--nosplit-lmhead", action="store_true",
@@ -478,12 +505,15 @@ def main():
     cp = "float32" if args.fp32_compute else "float16"
     v4 = args.v4_precision
     d2 = args.fp16_attn
+    e235 = args.e235
     sel_fp32 = args.selective_fp32
     if sel_fp32:
         cp_desc = "SELECTIVE-FP32(softmax/exp/rsqrt/reduce→fp32, rest→fp16)"
     elif v4:
         cp_desc = "V4(kv_cache→FP32, rest→FP16)"
-        if d2:
+        if e235:
+            cp_desc += " + E235(attn+ssm_ab→FP16, ssm_proj→LUT6gs2)"
+        elif d2:
             cp_desc += " + D2(attn Q/K/V/O→FP16)"
     else:
         cp_desc = cp.upper()
@@ -520,13 +550,13 @@ def main():
                               only_chunk=ci, static_prefill=args.static_prefill,
                               lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
                               compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
-                              fp16_attn=d2)
+                              fp16_attn=d2, e235=e235)
     else:
         export_ffn_chunks(model, args.output, args.skip_existing,
                           static_prefill=args.static_prefill,
                           lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
                           compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
-                          fp16_attn=d2)
+                          fp16_attn=d2, e235=e235)
     if not args.ffn_only:
         print("\n[2/3] Embeddings")
         export_embeddings(model, args.output, args.skip_existing, compute_precision=cp)

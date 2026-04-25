@@ -807,15 +807,28 @@ def _apply_replacements_to_mlpackage(
         }
         deploy_target = _spec_to_target.get(spec.specificationVersion, ct.target.iOS18)
 
-        mlmodel = _mil_convert(
-            prog,
-            convert_from="milinternal",
-            convert_to="mlprogram",
-            compute_units=ct.ComputeUnit.CPU_ONLY,
-            skip_model_load=True,
-            pass_pipeline=ct.PassPipeline.EMPTY,
-            minimum_deployment_target=deploy_target,
-        )
+        # Temporarily remove nn_backend::handle_unused_inputs from the backend
+        # pipeline — it can't handle state-type inputs (KV cache).
+        # Must monkey-patch _PIPELINE_NAME_TO_PASSES since the backend pipeline
+        # is constructed independently from the user-facing pass_pipeline.
+        from coremltools.converters.mil.mil.passes.pass_pipeline import PassPipeline as _PP
+        _key = 'backend_mlprogram'
+        _orig = list(_PP._PIPELINE_NAME_TO_PASSES.get(_key, []))
+        _PP._PIPELINE_NAME_TO_PASSES[_key] = [
+            p for p in _orig if p != 'nn_backend::handle_unused_inputs'
+        ]
+        try:
+            mlmodel = _mil_convert(
+                prog,
+                convert_from="milinternal",
+                convert_to="mlprogram",
+                compute_units=ct.ComputeUnit.CPU_ONLY,
+                skip_model_load=True,
+                pass_pipeline=ct.PassPipeline.EMPTY,
+                minimum_deployment_target=deploy_target,
+            )
+        finally:
+            _PP._PIPELINE_NAME_TO_PASSES[_key] = _orig
         mlmodel.save(output_path)
 
         if verbose:

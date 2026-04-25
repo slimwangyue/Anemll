@@ -596,7 +596,9 @@ def phase_discover(args):
 # Phase 3: ABLATE — Per-chunk quality with selective palettization
 # ═══════════════════════════════════════════════════════════════════
 
-def _build_selective_lut_config(mlmodel, fp16_families, lut_bits=4, per_channel=4):
+def _build_selective_lut_config(mlmodel, fp16_families, lut_bits=4, per_channel=4,
+                               lut6_families=None, gs2_families=None,
+                               lut6_gs2_families=None):
     """Build an OptimizationConfig that applies LUT to all ops EXCEPT those in fp16_families.
 
     Args:
@@ -604,6 +606,9 @@ def _build_selective_lut_config(mlmodel, fp16_families, lut_bits=4, per_channel=
         fp16_families: list of family names to keep in FP16
         lut_bits: LUT bit width for quantized ops
         per_channel: group size for per-channel palettization
+        lut6_families: families to use LUT6 (instead of default lut_bits)
+        gs2_families: families to use group_size=2 (instead of default per_channel)
+        lut6_gs2_families: families to use LUT6 + group_size=2
 
     Returns:
         cto.coreml.OptimizationConfig ready for palettize_weights()
@@ -626,22 +631,45 @@ def _build_selective_lut_config(mlmodel, fp16_families, lut_bits=4, per_channel=
 
     config = cto.coreml.OptimizationConfig(global_config=global_cfg)
 
-    if not fp16_families:
-        return config  # All LUT4, no overrides
+    has_overrides = fp16_families or lut6_families or gs2_families or lut6_gs2_families
+    if not has_overrides:
+        return config  # All default LUT, no overrides
 
-    # Discover weight ops and set FP16 families to None (skip palettization)
-    fp16_set = set(fp16_families)
+    # Discover weight ops and apply per-family overrides
+    fp16_set = set(fp16_families or [])
+    lut6_set = set(lut6_families or [])
+    gs2_set = set(gs2_families or [])
+    lut6_gs2_set = set(lut6_gs2_families or [])
 
-    # Try MIL program first, then spec fallback
-    ops = {}
     ops = discover_weight_ops(mlmodel)
 
     skipped = 0
     for op_name, info in ops.items():
         family = info.get("family")
-        if family and family in fp16_set:
+        if not family:
+            continue
+
+        if family in fp16_set:
             config.set_op_name(op_name, None)  # Skip LUT for this op
             skipped += 1
+        elif family in lut6_gs2_set:
+            config.set_op_name(op_name, cto.coreml.OpPalettizerConfig(
+                mode="kmeans", nbits=6,
+                granularity="per_grouped_channel", group_size=2,
+                num_kmeans_workers=1,
+            ))
+        elif family in lut6_set:
+            config.set_op_name(op_name, cto.coreml.OpPalettizerConfig(
+                mode="kmeans", nbits=6,
+                granularity="per_grouped_channel", group_size=per_channel,
+                num_kmeans_workers=1,
+            ))
+        elif family in gs2_set:
+            config.set_op_name(op_name, cto.coreml.OpPalettizerConfig(
+                mode="kmeans", nbits=lut_bits,
+                granularity="per_grouped_channel", group_size=2,
+                num_kmeans_workers=1,
+            ))
 
     return config
 

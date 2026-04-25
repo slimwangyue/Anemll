@@ -50,6 +50,7 @@ TOKENS=40
 LUT_BITS=4
 PER_CHANNEL=4
 NO_D2=""
+E235=""
 CTX=""
 BATCH_SIZE=""
 
@@ -62,6 +63,7 @@ while [[ $# -gt 0 ]]; do
     --skip-export)    SKIP_EXPORT=true; shift ;;
     --skip-validate)  SKIP_VALIDATE=true; shift ;;
     --no-d2)          NO_D2="--no-d2"; shift ;;
+    --e235)           E235="--e235"; shift ;;
     --chunks)         CHUNKS="$2"; shift 2 ;;
     --tokens)         TOKENS="$2"; shift 2 ;;
     --lut-bits)       LUT_BITS="$2"; shift 2 ;;
@@ -150,6 +152,7 @@ else
   [[ -n "$SKIP_EXISTING" ]] && _export_args="$_export_args --skip-existing"
   [[ -n "$CHUNKS" ]] && _export_args="$_export_args --chunks $CHUNKS"
   [[ -n "$NO_D2" ]] && _export_args="$_export_args --no-d2"
+  [[ -n "$E235" ]] && _export_args="$_export_args --e235"
 
   PYTHONUNBUFFERED=1 "$PYTHON" scripts_qwen3_5/export.py \
     $_export_args \
