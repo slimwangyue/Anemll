@@ -1,0 +1,160 @@
+/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+========================================================================
+  DELTA-FP32 A/B COMPARISON
+  Baseline: V4 (all fp16 delta rule)
+  Patched:  V4 + delta-fp32 (exp/matmul/reduce in fp32 for prefill)
+========================================================================
+
+  Total prompt tokens: 297
+  Block 1: 256 tokens (full batch)
+  Block 2: 41 tokens (tail)
+
+========================================================================
+  PHASE 1: BASELINE
+========================================================================
+
+========================================================================
+  VARIANT: BASELINE
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_milestone_3.3
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (combined)... 2s
+  chunk 0 prefill (combined)... 2s
+  chunk 1 infer  (combined)... 2s
+  chunk 1 prefill (combined)... 3s
+  chunk 2 infer  (combined)... 2s
+  chunk 2 prefill (combined)... 3s
+  chunk 3 infer  (combined)... 2s
+  chunk 3 prefill (combined)... 3s
+  chunk 4 infer  (combined)... 2s
+  chunk 4 prefill (combined)... 3s
+  chunk 5 infer  (combined)... 2s
+  chunk 5 prefill (combined)... 3s
+  chunk 6 infer  (combined)... 2s
+  chunk 6 prefill (combined)... 3s
+  chunk 7 infer  (combined)... 2s
+  chunk 7 prefill (combined)... 3s
+  chunk 8 infer  (combined)... 1s
+  chunk 8 prefill (combined)... 1s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=combined-dedup, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded. BS=256, ctx=4096, chunks=9
+
+  --- Path A: block1 batch + block2 BATCH tail ---
+  Path A: block1 tok=248046, block2 tok=248068
+
+  --- Path B: block1 batch + block2 SEQUENTIAL tail ---
+  Path B: block1 tok=248046, block2 tok=248068
+  Path B: block1 tok=248046, block2 tok=248068
+
+  --- Checkpoint 1: Block1 state equality ---
+  Block1 identical: True
+
+  --- Checkpoint 2: Per-chunk divergence in block2 ---
+   chunk | hidden_cos | hidden_max |  conv_cos |   rec_cos |    kv_cos
+  -------+------------+------------+-----------+-----------+----------
+       0 |   0.999770 |     0.0046 |  0.999898 |  0.999929 |  1.000000
+       1 |   0.999563 |     0.0101 |  0.999528 |  0.999808 |  0.999952
+       2 |   0.898239 |     0.7148 |  0.875265 |  0.970685 |  0.545873
+       3 |   0.842947 |     1.1641 |  0.808781 |  0.884418 |  0.527297
+       4 |   0.791329 |     0.8047 |  0.832704 |  0.920999 |  0.101061
+       5 |   0.800126 |     3.4688 |  0.906012 |  0.971443 |  0.506569
+       6 |   0.887321 |    16.0000 |  0.922948 |  0.970037 |  0.559025
+       7 |   0.845731 |     2.1875 |  0.938775 |  0.969026 |  0.163542
+       8 |   0.846972 |     7.6064 |  1.000000 |  1.000000 |  0.978230
+
+  --- Checkpoint 3: Final comparison ---
+  last_hidden cos=0.846972  max_abs=7.6064
+  logits cos=0.845260
+  token A=248068  B=248068  match=True
+
+  --- Experiment X: good hidden → lm_head ---
+  good hidden → lm_head → token=248068  (B_token=248068)
+  Experiment X fixes token: True
+
+  --- Experiment Y: good KV → decode ---
+  A-states + B-KV → decode → token=271
+
+  --- Experiment Z: good linear → decode ---
+  A-states + B-linear → decode → token=271
+
+  Baseline completed in 54.1s
+
+========================================================================
+  PHASE 2: PATCHED (delta-fp32)
+========================================================================
+
+========================================================================
+  VARIANT: PATCHED (delta-fp32)
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_delta_fp32_test
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (combined)... 3s
+  chunk 0 prefill (combined)... 3s
+  chunk 1 infer  (combined)... 4s
+  chunk 1 prefill (combined)... 4s
+  chunk 2 infer  (combined)... 4s
+  chunk 2 prefill (combined)... 4s
+  chunk 3 infer  (combined)... 4s
+  chunk 3 prefill (combined)... 4s
+  chunk 4 infer  (combined)... 4s
+  chunk 4 prefill (combined)... 4s
+  chunk 5 infer  (combined)... 4s
+  chunk 5 prefill (combined)... 4s
+  chunk 6 infer  (combined)... 4s
+  chunk 6 prefill (combined)... 4s
+  chunk 7 infer  (combined)... 4s
+  chunk 7 prefill (combined)... 4s
+  chunk 8 infer  (combined)... 0s
+  chunk 8 prefill (combined)... 1s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=combined-dedup, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded. BS=256, ctx=4096, chunks=9
+
+  --- Path A: block1 batch + block2 BATCH tail ---
+  Path A: block1 tok=248046, block2 tok=248068
+
+  --- Path B: block1 batch + block2 SEQUENTIAL tail ---
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 646, in <module>
+    main()
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 525, in main
+    patched = run_variant(PATCHED_DIR, "PATCHED (delta-fp32)", all_ids, block1_ids, block2_ids, BS)
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 340, in run_variant
+    block2_b = sequential_tail_instrumented(engine, block2_ids, start_pos=bs)
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 201, in sequential_tail_instrumented
+    hidden = out["output_hidden_states"]
+KeyError: 'output_hidden_states'

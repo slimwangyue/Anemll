@@ -852,7 +852,16 @@ class ChatEngine:
 
     def _reset_states(self):
         """Reset KV cache, linear states, and position to zero."""
-        self.states = [m.make_state() for m in self.ffns]
+        # Create state from PREFILL model if available, so that
+        # consecutive prefill.predict() calls properly share KV cache.
+        # The state object must be created from the same function that
+        # will call predict() first; otherwise the internal buffer IDs
+        # may not match and the second prefill call reads initial zeros
+        # instead of the persisted KV cache.
+        if self.has_prefill:
+            self.states = [m.make_state() for m in self.prefills]
+        else:
+            self.states = [m.make_state() for m in self.ffns]
         self.lin_convs = [
             np.zeros(self.per_chunk_conv_shapes[ci], dtype=np.float16)
             for ci in range(self.num_chunks)]
@@ -1104,6 +1113,12 @@ class ChatEngine:
             if 'linear_conv_state_out' in out:
                 self.lin_convs[ci] = out['linear_conv_state_out']
                 self.lin_recs[ci] = out['linear_recurrent_state_out']
+            # Re-zero padding hidden states between chunks to prevent
+            # padding values from accumulating through residual connections
+            # and MLP layers.  Without this, padding hidden norms grow
+            # ~100× over 8 chunks and corrupt valid-position outputs.
+            if valid_len < self._prefill_bs:
+                hidden[:, valid_len:, :] = 0.0
 
         # Extract last valid token's hidden state for lm_head.
         # Prefill outputs hidden [1, BATCH_SIZE, 2560] but lm_head expects
@@ -1225,22 +1240,19 @@ class ChatEngine:
                      and self.pos + bs <= self.ctx)
 
         # ── Batch prefill path ──
-        # Only FULL blocks (valid_len == bs) are processed via batch prefill.
-        # Partial tail blocks fall through to sequential because the batch
-        # prefill computation with heavy padding (>50% zeros) diverges
-        # numerically from sequential on both CPU and ANE, causing wrong
-        # output for some prompts.
         if use_batch:
             chunks = _chunk_tokens(prompt_tokens, bs)
             for block in chunks:
                 block_len = len(block)
-                if block_len < bs:
-                    # Tail (partial) block — let sequential fallback handle
-                    # it to avoid padding-induced numerical divergence.
-                    break
                 if self.pos + bs > self.ctx:
                     # Not enough state slots for a full block — hand
                     # the remaining tokens to the sequential fallback.
+                    break
+                if block_len < bs:
+                    # Partial (tail) block: fall through to sequential.
+                    # Batch prefill of partial blocks introduces float16
+                    # numerical drift from padding that can flip the top
+                    # token vs sequential processing.
                     break
                 t0 = time.time()
                 last_next = self._batch_prefill(block, self.pos)

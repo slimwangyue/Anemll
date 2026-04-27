@@ -83,3 +83,6 @@ tests/dev/kv_persist_golden/
 qwen3_5_2B_milestone_3.4_ctx4096_fkv/
 qwen3_5_2B_milestone_3.4_ctx4096_fkv_lut6/
 qwen3_5_4B_E235/
+.bnns_cache/
+qwen3_5_4B_delta_fp32_test/
+qwen3_5_4B_milestone_3.4_fix/

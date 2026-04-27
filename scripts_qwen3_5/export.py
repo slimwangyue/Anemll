@@ -24,6 +24,9 @@ import numpy as np
 import torch
 import coremltools as ct
 from coremltools.converters.mil.mil.passes.defs.quantization import FP16ComputePrecision
+from coremltools.converters.mil import Builder as mb
+from coremltools.converters.mil.mil import types as mil_types
+from coremltools.converters.mil.mil.passes.helper import block_context_manager
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_SCRIPT_DIR, ".."))
@@ -161,6 +164,117 @@ def get_v4_compute_precision(model, chunk_idx):
     return FP16ComputePrecision(op_selector=selector), fp16_layers, fp32_layers
 
 
+# ── Post-conversion pass: ensure casts between read_state and slice_update ──
+
+def _ensure_state_slice_update_casts(mlmodel):
+    """Inject casts between read_state and slice_update to work around ANE bug.
+
+    The ANE has a runtime defect where slice_update operating directly on
+    read_state output ignores dynamic begin/end parameters and uses trace-time
+    constants instead.  This causes KV cache writes to go to position 0 instead
+    of current_pos during multi-block batch prefill.
+
+    FP16ComputePrecision cannot fix this because read_state and
+    coreml_update_state are in its _UNSUPPORTED_FP16_OPS set — the V4
+    op_selector is never consulted for state ops.
+
+    This pass finds slice_update ops whose 'x' input comes directly from
+    read_state (no intermediate op) and injects a cast(fp16→fp32) + cast back
+    to break the chain.  The cast forces the ANE to evaluate dynamic positions.
+
+    Returns the number of casts injected.
+    """
+    prog = mlmodel._mil_program
+    if prog is None:
+        return 0
+
+    total_injected = 0
+
+    for fn in prog.functions.values():
+        total_injected += _inject_state_casts_in_block(fn)
+
+    return total_injected
+
+
+@block_context_manager
+def _inject_state_casts_in_block(block):
+    """Walk a MIL block and inject casts for read_state → slice_update chains."""
+    injected = 0
+
+    for op in list(block.operations):
+        # Process nested blocks
+        for b in op.blocks:
+            injected += _inject_state_casts_in_block(b)
+
+        if op.op_type != "slice_update":
+            continue
+
+        x_var = op.inputs.get("x")
+        if x_var is None or x_var.op is None:
+            continue
+        if x_var.op.op_type != "read_state":
+            continue  # already has intermediate op (cast, etc.)
+
+        # Direct read_state → slice_update — inject cast to break the chain.
+        # Cast fp16 → fp32 (forces ANE to re-evaluate dynamic begin/end).
+        cast_to_fp32 = mb.cast(
+            x=x_var,
+            dtype="fp32",
+            name=f"{x_var.name}_to_fp32",
+            before_op=op,
+        )
+
+        # Also promote update to fp32 for type consistency
+        update_var = op.inputs.get("update")
+        if update_var is not None and update_var.is_tensor_or_scalar_of(dtype="fp16"):
+            cast_update = mb.cast(
+                x=update_var,
+                dtype="fp32",
+                name=f"{update_var.name}_to_fp32",
+                before_op=op,
+            )
+        else:
+            cast_update = update_var
+
+        # Collect remaining inputs (begin, end, squeeze_mask, stride, etc.)
+        new_inputs = {}
+        for k, v in op.inputs.items():
+            if k == "x":
+                new_inputs[k] = cast_to_fp32
+            elif k == "update":
+                new_inputs[k] = cast_update
+            else:
+                new_inputs[k] = v
+
+        new_inputs["name"] = f"{op.name}_fp32"
+        new_inputs["before_op"] = op
+
+        # Create new slice_update with fp32 inputs
+        new_su = mb.slice_update(**new_inputs)
+
+        # Cast output back to fp16 for downstream consumers (coreml_update_state)
+        cast_back = mb.cast(
+            x=new_su,
+            dtype="fp16",
+            name=f"{new_su.name}_to_fp16",
+            before_op=op,
+        )
+
+        # Replace all uses of the old slice_update output
+        op.enclosing_block.replace_uses_of_var_after_op(
+            anchor_op=op,
+            old_var=op.outputs[0],
+            new_var=cast_back,
+            force_replace=True,
+        )
+
+        # Remove old slice_update
+        op.enclosing_block.remove_ops([op])
+        injected += 1
+
+    return injected
+
+
 # ── D2: Selective LUT4 — keep F-layer attention Q/K/V/O in FP16 ──
 
 # Attention weight families to keep in FP16 (not quantized to LUT4)
@@ -225,6 +339,45 @@ def _make_selective_fp32_selector():
 def get_selective_compute_precision():
     """Return FP16ComputePrecision with selective op_selector."""
     return FP16ComputePrecision(op_selector=_make_selective_fp32_selector())
+
+
+# ── Delta-FP32: keep chunked delta rule accumulations in fp32 (prefill only) ──
+
+# Superset of _FP32_SENSITIVE_OPS plus data-dependent matmuls.
+# PyTorch `@` between two data tensors (not fixed weights) traces to MIL `matmul`.
+# Fixed-weight projections (nn.Conv2d / nn.Linear) trace to MIL `conv` or `linear`,
+# which are NOT in this set → they stay fp16.
+_DELTA_FP32_OPS = frozenset({
+    'softmax',       # attention softmax
+    'reduce_sum',    # l2norm, attention accumulation
+    'reduce_mean',   # normalization
+    'rsqrt',         # l2norm inverse sqrt
+    'exp',           # decay computation (g.exp()), recurrence
+    'log',           # potential log in recurrence
+    'cumsum',        # cumulative sum (if used directly)
+    'matmul',        # data-dependent matmuls: intra-chunk attn, forward substitution,
+                     # inter-chunk recurrence, cumsum-via-tril_ones-matmul
+})
+
+
+def _make_delta_fp32_selector():
+    """Op selector for prefill: keep delta rule accumulation ops in fp32.
+
+    Also keeps KV cache state ops in fp32 (for F-layer chunks).
+    Returns True = convert to fp16, False = keep original precision (fp32).
+    """
+    def selector(op):
+        if op.op_type in _DELTA_FP32_OPS:
+            return False  # keep in fp32
+        if _is_kv_cache_op(op):
+            return False  # keep KV cache ops in fp32
+        return True  # convert to fp16
+    return selector
+
+
+def get_delta_fp32_compute_precision():
+    """Return FP16ComputePrecision keeping delta rule ops in fp32."""
+    return FP16ComputePrecision(op_selector=_make_delta_fp32_selector())
 
 
 from anemll.models.qwen3_5_model import Qwen35ForCausalLM, Qwen35Config, MODEL_DTYPE, TEST_DEVICE
@@ -334,7 +487,8 @@ def export_lm_head_nosplit(model, out_dir, skip_existing, compute_precision="flo
 
 def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_prefill=False,
                       lut_bits_override=None, per_channel_override=None, compute_precision="float16",
-                      v4_precision=False, selective_fp32=False, fp16_attn=False, e235=False):
+                      v4_precision=False, selective_fp32=False, fp16_attn=False, e235=False,
+                      delta_fp32=False, prefill_only=False):
     lut_bits = lut_bits_override if lut_bits_override is not None else LUT_BITS
     ffn_pc = per_channel_override if per_channel_override is not None else FFN_PER_CHANNEL
     label = f"LUT{lut_bits}"
@@ -383,9 +537,16 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
                 conv.compute_precision = override_cp
             return conv
 
+        # For delta-fp32: build separate prefill precision override
+        prefill_override_cp = None
+        if delta_fp32:
+            prefill_override_cp = get_delta_fp32_compute_precision()
+
         # Decode chunk
         dec_path = os.path.join(out_dir, f"ffn_{label}_chunk{ci}.mlpackage")
-        if skip_existing and os.path.exists(dec_path):
+        if prefill_only:
+            print(f"  [skip] decode chunk {ci} (--prefill-only)")
+        elif skip_existing and os.path.exists(dec_path):
             print(f"  [skip] decode chunk {ci} (layers {sl}-{el-1})")
         else:
             print(f"  Exporting decode chunk {ci} layers [{sl}-{el-1}] ({label} gs={ffn_pc} {cp_label})...")
@@ -393,6 +554,11 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             conv = _make_converter()
             ml = conv.convert_part_2(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                      override_start_layer=sl, override_end_layer=el)
+            # Inject casts between read_state → slice_update (ANE bug workaround)
+            if has_f_layers:
+                n_casts = _ensure_state_slice_update_casts(ml)
+                if n_casts:
+                    print(f"    [state-cast] Injected {n_casts} cast(s) for read_state → slice_update")
             if use_selective_lut:
                 if e235:
                     fp16_fams = E235_FP16_FAMILIES if has_f_layers else ["ssm_alpha", "ssm_beta"]
@@ -416,9 +582,15 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
         if skip_existing and os.path.exists(pf_path):
             print(f"  [skip] {pf_desc}")
         else:
-            print(f"  Exporting {pf_desc} ({label} gs={ffn_pc} {cp_label})...")
+            pf_cp_label = cp_label
+            if delta_fp32:
+                pf_cp_label = f"DELTA-FP32({cp_label})"
+            print(f"  Exporting {pf_desc} ({label} gs={ffn_pc} {pf_cp_label})...")
             t0 = time.time()
             conv = _make_converter()
+            # Override prefill compute precision for delta-fp32
+            if prefill_override_cp is not None:
+                conv.compute_precision = prefill_override_cp
             if static_prefill:
                 ml = conv.convert_part_2_prefill_exact(
                     model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
@@ -427,6 +599,11 @@ def export_ffn_chunks(model, out_dir, skip_existing, only_chunk=None, static_pre
             else:
                 ml = conv.convert_part_2_prefill(model, chunk_idx=ci, total_chunks=NUM_CHUNKS,
                                                  override_start_layer=sl, override_end_layer=el)
+            # Inject casts between read_state → slice_update (ANE bug workaround)
+            if has_f_layers:
+                n_casts = _ensure_state_slice_update_casts(ml)
+                if n_casts:
+                    print(f"    [state-cast] Injected {n_casts} cast(s) for read_state → slice_update")
             if use_selective_lut:
                 if e235:
                     fp16_fams = E235_FP16_FAMILIES if has_f_layers else ["ssm_alpha", "ssm_beta"]
@@ -477,6 +654,10 @@ def main():
                         help="E235: D2 + ssm_alpha/beta FP16 + SSM proj LUT6 gs=2 (best quality)")
     parser.add_argument("--selective-fp32", action="store_true",
                         help="Selective fp32: keep softmax/exp/rsqrt/reduce in fp32, rest fp16 for ANE")
+    parser.add_argument("--delta-fp32", action="store_true",
+                        help="Delta-FP32: keep chunked delta rule accumulations (exp/matmul/reduce) in fp32 for prefill only")
+    parser.add_argument("--prefill-only", action="store_true",
+                        help="Export only prefill chunks (skip decode chunks, embeddings, lm_head)")
     parser.add_argument("--nosplit-lmhead", action="store_true",
                         help="Export lm_head as single Conv2d (no 16-way split). Required for embed_lmhead_combined.")
     parser.add_argument("--ctx", type=int, default=None,
@@ -507,6 +688,12 @@ def main():
     d2 = args.fp16_attn
     e235 = args.e235
     sel_fp32 = args.selective_fp32
+    delta_fp32 = args.delta_fp32
+    prefill_only = args.prefill_only
+    if delta_fp32:
+        cp_desc_extra = " + DELTA-FP32(prefill: exp/matmul/reduce→fp32)"
+    else:
+        cp_desc_extra = ""
     if sel_fp32:
         cp_desc = "SELECTIVE-FP32(softmax/exp/rsqrt/reduce→fp32, rest→fp16)"
     elif v4:
@@ -517,6 +704,7 @@ def main():
             cp_desc += " + D2(attn Q/K/V/O→FP16)"
     else:
         cp_desc = cp.upper()
+    cp_desc += cp_desc_extra
     print("=" * 70)
     print(f"  Qwen3.5 ANE Export — Milestone 3.3 (V4+P2+D2)")
     print(f"  Embed: LUT{LUT_BITS} gs={PER_CHANNEL} | LM Head: LUT{LM_HEAD_LUT} gs={PER_CHANNEL} | FFN: {FFN_LABEL} gs={FFN_PER_CHANNEL} × {NUM_CHUNKS} chunks")
@@ -524,8 +712,8 @@ def main():
     print(f"  Batch: {BATCH_SIZE} | CTX: {CTX} | Prefill: {prefill_mode} | Compute: {cp_desc}")
     if args._chunk_list is not None:
         print(f"  Chunks: {args._chunk_list}")
-    if args.ffn_only:
-        print(f"  Mode: FFN-only (skipping embeddings & lm_head)")
+    if args.ffn_only or prefill_only:
+        print(f"  Mode: {'prefill-only' if prefill_only else 'FFN-only'} (skipping embeddings & lm_head)")
     print(f"  Model: {args.model}")
     print(f"  Output: {args.output}")
     print("=" * 70)
@@ -550,14 +738,16 @@ def main():
                               only_chunk=ci, static_prefill=args.static_prefill,
                               lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
                               compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
-                              fp16_attn=d2, e235=e235)
+                              fp16_attn=d2, e235=e235,
+                              delta_fp32=delta_fp32, prefill_only=prefill_only)
     else:
         export_ffn_chunks(model, args.output, args.skip_existing,
                           static_prefill=args.static_prefill,
                           lut_bits_override=args.lut_bits, per_channel_override=args.per_channel,
                           compute_precision=cp, v4_precision=v4, selective_fp32=sel_fp32,
-                          fp16_attn=d2, e235=e235)
-    if not args.ffn_only:
+                          fp16_attn=d2, e235=e235,
+                          delta_fp32=delta_fp32, prefill_only=prefill_only)
+    if not args.ffn_only and not prefill_only:
         print("\n[2/3] Embeddings")
         export_embeddings(model, args.output, args.skip_existing, compute_precision=cp)
         print("\n[3/3] LM Head")
@@ -566,7 +756,7 @@ def main():
         else:
             export_lm_head(model, args.output, args.skip_existing, compute_precision=cp)
     else:
-        print("\n  [--ffn-only] Skipping embeddings and lm_head")
+        print("\n  Skipping embeddings and lm_head")
     
     del model; gc.collect()
 

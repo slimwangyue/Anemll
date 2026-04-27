@@ -1,0 +1,525 @@
+/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+========================================================================
+  ANE-PATH RCA DIAGNOSTICS
+  Compute unit: ComputeUnit.CPU_AND_NE
+========================================================================
+
+Loading engine on ANE...
+  Using separate .mlmodelc files to avoid runtime ANE compilation
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (separate)... 6s
+  chunk 0 prefill (separate)... 14s
+  chunk 1 infer  (separate)... 8s
+  chunk 1 prefill (separate)... 17s
+  chunk 2 infer  (separate)... 8s
+  chunk 2 prefill (separate)... 17s
+  chunk 3 infer  (separate)... 8s
+  chunk 3 prefill (separate)... 17s
+  chunk 4 infer  (separate)... 8s
+  chunk 4 prefill (separate)... 17s
+  chunk 5 infer  (separate)... 8s
+  chunk 5 prefill (separate)... 17s
+  chunk 6 infer  (separate)... 8s
+  chunk 6 prefill (separate)... 17s
+  chunk 7 infer  (separate)... 8s
+  chunk 7 prefill (separate)... 17s
+  chunk 8 infer  (separate)... 1s
+  chunk 8 prefill (separate)... 2s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=separate, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded in 199.8s
+  Batch size: 256, Chunks: 9, KV states: ['k_cache', 'v_cache']
+  Block1: 256, Tail: 35
+
+========================================================================
+  TEST 0: ANE Determinism Baseline
+  Running same operation twice to check if ANE is deterministic
+========================================================================
+
+  Tokens: run1=198, run2=198, match=True
+  ANE NON-DETERMINISM DETECTED (7 non-identical states):
+
+  Non-identical states between identical runs
+  chunk  state             cosine       max_abs      mean_abs
+  ─────  ────────────  ──────────  ────────────  ────────────
+      1  v_cache         1.000000      0.000000    0.00000000
+      1  rec             1.000000      0.000000    0.00000000
+      2  k_cache         1.000000      0.000000    0.00000000
+      3  k_cache         1.000000      0.000000    0.00000000
+      3  conv            1.000000      0.000000    0.00000000
+      6  v_cache         1.000000      0.000000    0.00000000
+      7  rec             1.000000      0.000000    0.00000000
+  Hidden determinism:
+    chunk0: IDENTICAL
+    chunk1: cos=1.00000000  max_abs=0.00000000  ← NON-DETERMINISTIC
+    chunk2: cos=1.00000000  max_abs=0.00000000  ← NON-DETERMINISTIC
+    chunk3: IDENTICAL
+    chunk4: IDENTICAL
+    chunk5: IDENTICAL
+    chunk6: IDENTICAL
+    chunk7: IDENTICAL
+    chunk8: cos=1.00000000  max_abs=0.00000000  ← NON-DETERMINISTIC
+  Logits: cos=1.00000000  max_abs=0.00000000
+
+========================================================================
+  TEST 1: Case A (seq tail) vs Case B (batch tail) — ANE
+========================================================================
+
+  Block1 state comparison (should be identical):
+  All block1 states identical (cos > 0.9999) ✓
+
+  After-tail state comparison (A seq vs B batch) — ANE:
+
+  A(seq) vs B(batch) — all states after tail [ANE]
+  chunk  state             cosine       max_abs      mean_abs
+  ─────  ────────────  ──────────  ────────────  ────────────
+      0  k_cache         1.000000      0.000000    0.00000000
+      0  v_cache         1.000000      0.000000    0.00000000
+      0  conv            0.996111      1.197266    0.06152257
+      0  rec             0.999631      0.091614    0.00013823
+      1  k_cache         0.990432      3.496094    0.00087155
+      1  v_cache         0.989598      2.800827    0.00041286
+      1  conv            0.964042      1.871094    0.11856011
+      1  rec             0.984126      0.085388    0.00019491
+      2  k_cache         0.979054     10.082031    0.00134837
+      2  v_cache         0.979479      5.179688    0.00053823
+      2  conv            0.963774      2.359375    0.14833338
+      2  rec             0.966917      0.889404    0.00036285
+      3  k_cache         0.080519     19.990234    0.02015706
+      3  v_cache         0.962875      3.473816    0.00074111
+      3  conv            0.878925      3.550781    0.28557479
+      3  rec             0.894820      0.264893    0.00057883
+      4  k_cache         0.128153     14.963867    0.01986608
+      4  v_cache         0.932954      7.616699    0.00124063
+      4  conv            0.824312      5.090820    0.36920472
+      4  rec             0.876533      0.201294    0.00061516
+      5  k_cache         0.947330     10.597656    0.00235693
+      5  v_cache         0.951135      6.343750    0.00131049
+      5  conv            0.914737      4.593750    0.36577976
+      5  rec             0.974416      0.527344    0.00108693
+      6  k_cache         0.166962     11.937500    0.01969551
+      6  v_cache         0.980397      6.303711    0.00085739
+      6  conv            0.910547      4.532227    0.40774372
+      6  rec             0.963797      1.140625    0.00169105
+      7  k_cache         0.146444     15.242188    0.01947741
+      7  v_cache         0.988144      9.939453    0.00115934
+      7  conv            0.912201     11.648438    0.43117808
+      7  rec             0.956309      1.156738    0.00154843
+      8  k_cache         0.971211      6.422852    0.00627581
+      8  v_cache         0.993428     36.449219    0.00595567
+      8  conv            1.000000      0.000000    0.00000000
+      8  rec             1.000000      0.000000    0.00000000
+
+  Hidden states at last valid token position [ANE]:
+    chunk0: cos=0.982234  max_abs=0.070312
+    chunk1: cos=0.969443  max_abs=0.103027
+    chunk2: cos=0.947429  max_abs=0.833984
+    chunk3: cos=0.859303  max_abs=0.691406
+    chunk4: cos=0.733419  max_abs=1.779297
+    chunk5: cos=0.811081  max_abs=5.335938
+    chunk6: cos=0.936653  max_abs=10.531250
+    chunk7: cos=0.483023  max_abs=10.390625
+    chunk8: cos=0.420065  max_abs=14.625000
+
+  First decode token: A=198, B=198, match=True
+  Logits cosine: 0.834274
+  Top-10 A: [198, 248068, 248046, 74455, 271, 248045, 248044, 1, 317, 248069]
+  Top-10 B: [198, 248046, 74455, 248068, 271, 248044, 248045, 97319, 97444, 96347]
+
+  First large divergence (cos < 0.99): chunk1/v_cache cos=0.989598
+
+========================================================================
+  TEST 2: Padding leakage (zero vs random padding) — ANE
+========================================================================
+  Pre-tail states match: True
+  Pre-tail states EXACTLY identical: True
+
+  Zero-padding vs Random-padding states [ANE]:
+
+  ZERO vs RANDOM padding — state comparison [ANE]
+  chunk  state             cosine       max_abs      mean_abs
+  ─────  ────────────  ──────────  ────────────  ────────────
+      0  k_cache         1.000000      0.000000    0.00000000
+      0  v_cache         1.000000      0.000000    0.00000000
+      0  conv            1.000000      0.000000    0.00000000
+      0  rec             1.000000      0.000000    0.00000000
+      1  k_cache         1.000000      0.000000    0.00000000
+      1  v_cache         1.000000      0.000000    0.00000000
+      1  conv            1.000000      0.000000    0.00000000
+      1  rec             1.000000      0.000000    0.00000000
+      2  k_cache         1.000000      0.000000    0.00000000
+      2  v_cache         1.000000      0.000000    0.00000000
+      2  conv            1.000000      0.000000    0.00000000
+      2  rec             1.000000      0.000000    0.00000000
+      3  k_cache         1.000000      0.000000    0.00000000
+      3  v_cache         1.000000      0.000000    0.00000000
+      3  conv            1.000000      0.000000    0.00000000
+      3  rec             1.000000      0.000000    0.00000000
+      4  k_cache         1.000000      0.000000    0.00000000
+      4  v_cache         1.000000      0.000000    0.00000000
+      4  conv            1.000000      0.000000    0.00000000
+      4  rec             1.000000      0.000000    0.00000000
+      5  k_cache         1.000000      0.000000    0.00000000
+      5  v_cache         1.000000      0.000000    0.00000000
+      5  conv            1.000000      0.000000    0.00000000
+      5  rec             1.000000      0.000000    0.00000000
+      6  k_cache         1.000000      0.000000    0.00000000
+      6  v_cache         1.000000      0.000000    0.00000000
+      6  conv            1.000000      0.000000    0.00000000
+      6  rec             1.000000      0.000000    0.00000000
+      7  k_cache         1.000000      0.000000    0.00000000
+      7  v_cache         1.000000      0.000000    0.00000000
+      7  conv            1.000000      0.000000    0.00000000
+      7  rec             1.000000      0.000000    0.00000000
+      8  k_cache         1.000000      0.000000    0.00000000
+      8  v_cache         1.000000      0.000000    0.00000000
+      8  conv            1.000000      0.000000    0.00000000
+      8  rec             1.000000      0.000000    0.00000000
+
+  Hidden state comparison at VALID token positions [ANE]:
+    chunk0: valid cos=1.000000 max_abs=0.000000  |  padding cos=-0.027558 max_abs=91.218750
+    chunk1: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk2: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk3: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk4: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk5: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk6: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk7: valid cos=1.000000 max_abs=0.000000  |  padding cos=1.000000 max_abs=0.000000
+    chunk8: valid cos=1.000000 max_abs=0.000000  |  (no padding — last chunk outputs 1 token)
+
+  Token: ZERO=198, RANDOM=198, match=True
+  Logits cosine: 1.000000  max_abs: 0.000000
+
+  Padding hidden state norms (intra-chunk leakage) [ANE]:
+    chunk0: valid_norm=18.07  pad_norm=189.58  ratio=10.490034
+    chunk1: valid_norm=32.61  pad_norm=117.81  ratio=3.613100
+    chunk2: valid_norm=39.25  pad_norm=468.38  ratio=11.934560
+    chunk3: valid_norm=46.13  pad_norm=314.25  ratio=6.812186
+    chunk4: valid_norm=64.88  pad_norm=485.68  ratio=7.486062
+    chunk5: valid_norm=122.06  pad_norm=841.31  ratio=6.892771
+    chunk6: valid_norm=159.70  pad_norm=358.47  ratio=2.244659
+    chunk7: valid_norm=271.27  pad_norm=802.92  ratio=2.959825
+    chunk8: valid_norm=158.47  pad_norm=0.00  ratio=0.000000
+
+========================================================================
+  TEST 3: Non-zero state × batch size — 4 conditions [ANE]
+========================================================================
+
+  ── Condition: 1_zero_full [ANE] ──
+    chunk0: conv=0.991130  rec=0.999100  k_cache=1.000000  v_cache=1.000000
+    chunk1: conv=0.909410  rec=0.943736  k_cache=0.917208  v_cache=0.913069
+    chunk2: conv=0.774379  rec=0.938644  k_cache=0.879718  v_cache=0.893406
+    chunk3: conv=0.740353  rec=0.843367  k_cache=0.797977  v_cache=0.774168
+    chunk4: conv=0.792679  rec=0.878693  k_cache=0.771800  v_cache=0.729553
+    chunk5: conv=0.897600  rec=0.968576  k_cache=0.814805  v_cache=0.806455
+    chunk6: conv=0.926645  rec=0.941752  k_cache=0.864645  v_cache=0.893868
+    chunk7: conv=0.952572  rec=0.941651  k_cache=0.888710  v_cache=0.940295
+    chunk8: conv=1.000000  rec=1.000000  k_cache=0.916627  v_cache=0.985636
+    chunk0 hidden(last): cos=0.941680
+    chunk1 hidden(last): cos=0.845115
+    chunk2 hidden(last): cos=0.637038
+    chunk3 hidden(last): cos=0.528863
+    chunk4 hidden(last): cos=0.383800
+    chunk5 hidden(last): cos=0.239011
+    chunk6 hidden(last): cos=0.275132
+    chunk7 hidden(last): cos=0.520624
+    chunk8 hidden(last): cos=0.618477
+    Token: batch=41453, seq=41453, match=True
+
+  ── Condition: 2_zero_partial [ANE] ──
+    chunk0: conv=0.994007  rec=0.999018  k_cache=1.000000  v_cache=1.000000
+    chunk1: conv=0.933781  rec=0.967470  k_cache=0.973819  v_cache=0.958682
+    chunk2: conv=0.939194  rec=0.984277  k_cache=0.966403  v_cache=0.966691
+    chunk3: conv=0.943399  rec=0.963923  k_cache=0.944853  v_cache=0.942341
+    chunk4: conv=0.947519  rec=0.958494  k_cache=0.948069  v_cache=0.935230
+    chunk5: conv=0.965122  rec=0.978506  k_cache=0.961244  v_cache=0.963013
+    chunk6: conv=0.960273  rec=0.980780  k_cache=0.978983  v_cache=0.978526
+    chunk7: conv=0.956940  rec=0.967568  k_cache=0.981431  v_cache=0.986752
+    chunk8: conv=1.000000  rec=1.000000  k_cache=0.980522  v_cache=0.991593
+    chunk0 hidden(last): cos=0.977854
+    chunk1 hidden(last): cos=0.952782
+    chunk2 hidden(last): cos=0.920660
+    chunk3 hidden(last): cos=0.920433
+    chunk4 hidden(last): cos=0.909494
+    chunk5 hidden(last): cos=0.895735
+    chunk6 hidden(last): cos=0.899716
+    chunk7 hidden(last): cos=0.867152
+    chunk8 hidden(last): cos=0.819965
+    Token: batch=198, seq=198, match=True
+
+  ── Condition: 3_nonzero_full [ANE] ──
+    chunk0: conv=0.992467  rec=0.999195  k_cache=1.000000  v_cache=1.000000
+    chunk1: conv=0.925505  rec=0.952629  k_cache=0.957649  v_cache=0.956224
+    chunk2: conv=0.827649  rec=0.955172  k_cache=0.930394  v_cache=0.932344
+    chunk3: conv=0.801452  rec=0.818703  k_cache=0.565340  v_cache=0.868612
+    chunk4: conv=0.815258  rec=0.859953  k_cache=0.570795  v_cache=0.824750
+    chunk5: conv=0.919764  rec=0.970614  k_cache=0.869490  v_cache=0.875837
+    chunk6: conv=0.951859  rec=0.956935  k_cache=0.596510  v_cache=0.941362
+    chunk7: conv=0.967768  rec=0.949585  k_cache=0.601915  v_cache=0.965934
+    chunk8: conv=1.000000  rec=1.000000  k_cache=0.946095  v_cache=0.990763
+    chunk0 hidden(last): cos=0.948768
+    chunk1 hidden(last): cos=0.867351
+    chunk2 hidden(last): cos=0.714327
+    chunk3 hidden(last): cos=0.553576
+    chunk4 hidden(last): cos=0.478215
+    chunk5 hidden(last): cos=0.490675
+    chunk6 hidden(last): cos=0.584648
+    chunk7 hidden(last): cos=0.739933
+    chunk8 hidden(last): cos=0.764437
+    Token: batch=41453, seq=248046, match=False
+
+  ── Condition: 4_nonzero_partial [ANE] ──
+    chunk0: conv=0.996111  rec=0.999631  k_cache=1.000000  v_cache=1.000000
+    chunk1: conv=0.964042  rec=0.984126  k_cache=0.990432  v_cache=0.989598
+    chunk2: conv=0.963774  rec=0.966917  k_cache=0.979054  v_cache=0.979479
+    chunk3: conv=0.878925  rec=0.894820  k_cache=0.080519  v_cache=0.962875
+    chunk4: conv=0.824312  rec=0.876533  k_cache=0.128153  v_cache=0.932954
+    chunk5: conv=0.914737  rec=0.974416  k_cache=0.947330  v_cache=0.951135
+    chunk6: conv=0.910547  rec=0.963797  k_cache=0.166962  v_cache=0.980397
+    chunk7: conv=0.912201  rec=0.956309  k_cache=0.146444  v_cache=0.988144
+    chunk8: conv=1.000000  rec=1.000000  k_cache=0.971211  v_cache=0.993428
+    chunk0 hidden(last): cos=0.982234
+    chunk1 hidden(last): cos=0.969443
+    chunk2 hidden(last): cos=0.947429
+    chunk3 hidden(last): cos=0.859303
+    chunk4 hidden(last): cos=0.733419
+    chunk5 hidden(last): cos=0.811081
+    chunk6 hidden(last): cos=0.936653
+    chunk7 hidden(last): cos=0.483023
+    chunk8 hidden(last): cos=0.420065
+    Token: batch=198, seq=198, match=True
+
+  ── TEST 3 Summary [ANE] ──
+  condition              worst_cos  worst_loc             first_bad                        tok_match
+  1_zero_full             0.729553  chunk4/v_cache        chunk1/k_cache cos=0.9172             True
+  2_zero_partial          0.933781  chunk1/conv           chunk1/k_cache cos=0.9738             True
+  3_nonzero_full          0.565340  chunk3/k_cache        chunk1/k_cache cos=0.9576            False
+  4_nonzero_partial       0.080519  chunk3/k_cache        chunk1/v_cache cos=0.9896             True
+
+========================================================================
+  TEST 4: Divergence timeline — ANE
+========================================================================
+  After tail:    A=198, B=198
+  After decode1: A=248068, B=248068
+
+  After tail:    worst cos = 0.080519 at chunk3/k_cache
+  After decode1: worst cos = 0.088388 at chunk3/k_cache
+
+  Tail logits cos:    0.834274
+  Decode1 logits cos: 0.738988
+
+========================================================================
+  TEST 5: Per-chunk divergence growth in tail processing — ANE
+========================================================================
+
+  Pre-tail to Post-tail state CHANGE — A vs B [ANE]:
+  chunk  state           A_change    B_change      A_vs_B
+  ─────  ────────────  ──────────  ──────────  ──────────
+      0  conv            332.6903    330.9566    0.996111
+      0  rec              12.7649     12.7293    0.999631
+      1  k_cache         264.0649    264.7656    0.990432
+      1  v_cache         115.6537    111.4733    0.989598
+      1  conv            248.2191    245.6186    0.964042
+      1  rec               3.3001      3.1052    0.984126
+      2  k_cache         280.1671    280.0296    0.979054
+      2  v_cache         122.6899    108.7378    0.979479
+      2  conv            309.7050    307.5548    0.963774
+      2  rec               5.6567      4.9323    0.966917
+      3  k_cache         291.0092    808.0488    0.080519
+      3  v_cache         123.2327    112.3011    0.962875
+      3  conv            326.1240    329.0155    0.878925
+      3  rec               4.3272      4.3937    0.894820
+      4  k_cache         292.8785    794.2273    0.128153
+      4  v_cache         153.5343    139.2898    0.932954
+      4  conv            343.3308    349.7166    0.824312
+      4  rec               3.6155      3.7543    0.876533
+      5  k_cache         308.5439    306.5165    0.947330
+      5  v_cache         165.4336    175.3407    0.951135
+      5  conv            410.7341    423.2269    0.914737
+      5  rec               6.6081      6.4243    0.974416
+      6  k_cache         282.6403    773.2218    0.166962
+      6  v_cache         176.0300    183.2678    0.980397
+      6  conv            413.2701    419.9279    0.910547
+      6  rec               9.2421      9.0849    0.963797
+      7  k_cache         274.4532    752.6267    0.146444
+      7  v_cache         303.5588    320.5713    0.988144
+      7  conv            434.9302    433.2563    0.912201
+      7  rec               6.4664      7.3659    0.956309
+      8  k_cache         270.3819    271.9472    0.971211
+      8  v_cache         580.0628    556.1651    0.993428
+
+========================================================================
+  TEST 6: Direct padding effect on conv/rec states — ANE
+========================================================================
+
+  Token: ZERO_pad=198, RAND_pad=198
+
+  Conv state: ZERO vs RANDOM padding [ANE]
+    chunk0: cos=1.00000000  max_abs=0.00000000  delta_zero=330.9566  delta_rand=330.9566
+    chunk1: cos=1.00000000  max_abs=0.00000000  delta_zero=245.6186  delta_rand=245.6186
+    chunk2: cos=1.00000000  max_abs=0.00000000  delta_zero=307.5548  delta_rand=307.5548
+    chunk3: cos=1.00000000  max_abs=0.00000000  delta_zero=329.0155  delta_rand=329.0155
+    chunk4: cos=1.00000000  max_abs=0.00000000  delta_zero=349.7166  delta_rand=349.7166
+    chunk5: cos=1.00000000  max_abs=0.00000000  delta_zero=423.2269  delta_rand=423.2269
+    chunk6: cos=1.00000000  max_abs=0.00000000  delta_zero=419.9279  delta_rand=419.9279
+    chunk7: cos=1.00000000  max_abs=0.00000000  delta_zero=433.2563  delta_rand=433.2563
+    chunk8: cos=1.00000000  max_abs=0.00000000  delta_zero=0.0000  delta_rand=0.0000
+
+  Recurrent state: ZERO vs RANDOM padding [ANE]
+    chunk0: cos=1.00000000  max_abs=0.00000000  delta_zero=12.7293  delta_rand=12.7293
+    chunk1: cos=1.00000000  max_abs=0.00000000  delta_zero=3.1052  delta_rand=3.1052
+    chunk2: cos=1.00000000  max_abs=0.00000000  delta_zero=4.9323  delta_rand=4.9323
+    chunk3: cos=1.00000000  max_abs=0.00000000  delta_zero=4.3937  delta_rand=4.3937
+    chunk4: cos=1.00000000  max_abs=0.00000000  delta_zero=3.7543  delta_rand=3.7543
+    chunk5: cos=1.00000000  max_abs=0.00000000  delta_zero=6.4243  delta_rand=6.4243
+    chunk6: cos=1.00000000  max_abs=0.00000000  delta_zero=9.0849  delta_rand=9.0849
+    chunk7: cos=1.00000000  max_abs=0.00000000  delta_zero=7.3659  delta_rand=7.3659
+    chunk8: cos=1.00000000  max_abs=0.00000000  delta_zero=0.0000  delta_rand=0.0000
+
+========================================================================
+  BONUS: Checking if this ANE run differs from CPU_ONLY baseline
+  (This is a sanity check — if ANE != CPU, the mechanism may differ)
+========================================================================
+  Loading CPU_ONLY engine for cross-comparison...
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (separate)... 1s
+  chunk 0 prefill (separate)... 2s
+  chunk 1 infer  (separate)... 2s
+  chunk 1 prefill (separate)... 3s
+  chunk 2 infer  (separate)... 2s
+  chunk 2 prefill (separate)... 2s
+  chunk 3 infer  (separate)... 2s
+  chunk 3 prefill (separate)... 3s
+  chunk 4 infer  (separate)... 2s
+  chunk 4 prefill (separate)... 2s
+  chunk 5 infer  (separate)... 2s
+  chunk 5 prefill (separate)... 3s
+  chunk 6 infer  (separate)... 2s
+  chunk 6 prefill (separate)... 3s
+  chunk 7 infer  (separate)... 2s
+  chunk 7 prefill (separate)... 2s
+  chunk 8 infer  (separate)... 0s
+  chunk 8 prefill (separate)... 0s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=separate, prefill=batch-256, stop_ids={248044, 248046}
+
+  ANE vs CPU_ONLY — Case B states:
+
+  ANE vs CPU_ONLY — batch tail states
+  chunk  state             cosine       max_abs      mean_abs
+  ─────  ────────────  ──────────  ────────────  ────────────
+      0  k_cache         1.000000      0.000000    0.00000000
+      0  v_cache         1.000000      0.000000    0.00000000
+      0  conv            0.995079      1.935547    0.07280010
+      0  rec             0.985447      0.781250    0.00042832
+      1  k_cache         0.908370      5.123346    0.00753454
+      1  v_cache         0.901146      2.648438    0.00365037
+      1  conv            0.946465      2.007812    0.14649931
+      1  rec             0.947480      0.173828    0.00036206
+      2  k_cache         0.851839      8.271484    0.00988017
+      2  v_cache         0.091464     18.086426    0.00803784
+      2  conv            0.857370      4.071289    0.29928637
+      2  rec             0.896753      1.166016    0.00079494
+      3  k_cache         0.715924     10.011719    0.00181253
+      3  v_cache         0.759480      6.890625    0.00535966
+      3  conv            0.901588      4.082031    0.25998057
+      3  rec             0.876185      0.378784    0.00071934
+      4  k_cache         0.734190     11.089844    0.00170163
+      4  v_cache         0.049581     24.806396    0.01013968
+      4  conv            0.817569      5.056641    0.37490148
+      4  rec             0.828445      0.162090    0.00077831
+      5  k_cache         0.795818     14.136719    0.01227665
+      5  v_cache         0.045988     51.507690    0.01219265
+      5  conv            0.897278      5.712891    0.40297237
+      5  rec             0.956727      0.404297    0.00143493
+      6  k_cache         0.754821      8.503906    0.00164606
+      6  v_cache         0.871964     21.809570    0.00573618
+      6  conv            0.918805      4.375000    0.38822794
+      6  rec             0.932053      2.523438    0.00208736
+      7  k_cache         0.801163      5.763672    0.00140633
+      7  v_cache         0.156629     32.656250    0.01926689
+      7  conv            0.915964     18.265625    0.42072110
+      7  rec             0.908343      0.823242    0.00208370
+      8  k_cache         0.888893      8.009766    0.03116991
+      8  v_cache         0.977174     35.248047    0.02880801
+      8  conv            1.000000      0.000000    0.00000000
+      8  rec             1.000000      0.000000    0.00000000
+
+  Tokens: ANE=198, CPU=198
+  Logits cos: 0.775933
+
+  ANE vs CPU_ONLY — Case A states:
+
+  ANE vs CPU_ONLY divergent states (Case A)
+  chunk  state             cosine       max_abs      mean_abs
+  ─────  ────────────  ──────────  ────────────  ────────────
+      0  conv            0.998571      0.769531    0.03684362
+      0  rec             0.985814      0.798828    0.00037035
+      1  k_cache         0.917968      4.850342    0.00705180
+      1  v_cache         0.912914      2.648438    0.00339291
+      1  conv            0.980283      1.500000    0.08964279
+      1  rec             0.964949      0.172363    0.00027858
+      2  k_cache         0.864628      8.683594    0.00938507
+      2  v_cache         0.878284      4.735352    0.00386003
+      2  conv            0.970316      2.492188    0.12980185
+      2  rec             0.937200      0.565308    0.00060355
+      3  k_cache         0.800113     15.328125    0.01162846
+      3  v_cache         0.768631      6.890625    0.00520452
+      3  conv            0.960893      2.761719    0.15651590
+      3  rec             0.919534      0.221008    0.00056089
+      4  k_cache         0.776776     17.371094    0.01207141
+      4  v_cache         0.710281     10.349609    0.00687992
+      4  conv            0.956845      3.438477    0.17168353
+      4  rec             0.922820      0.170166    0.00050610
+      5  k_cache         0.810598     14.136719    0.01180227
+      5  v_cache         0.788062      8.099609    0.00704081
+      5  conv            0.969079      4.447266    0.19658730
+      5  rec             0.977080      0.835938    0.00085979
+      6  k_cache         0.861876      9.789062    0.00917131
+      6  v_cache         0.883641     21.809570    0.00537370
+      6  conv            0.960758      4.835938    0.23456433
+      6  rec             0.965052      1.691406    0.00133751
+      7  k_cache         0.881479     10.923828    0.00823175
+      7  v_cache         0.932692     13.331543    0.00689294
+      7  conv            0.967336      8.916992    0.22131077
+      7  rec             0.944425      0.770020    0.00140299
+      8  k_cache         0.903726      8.009766    0.02890747
+      8  v_cache         0.981990     13.874023    0.02579867
+  Tokens: ANE_A=198, CPU_A=198
+
+========================================================================
+  ALL ANE TESTS COMPLETE
+========================================================================

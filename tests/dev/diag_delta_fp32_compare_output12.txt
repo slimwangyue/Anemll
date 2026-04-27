@@ -1,0 +1,245 @@
+/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+========================================================================
+  DELTA-FP32 A/B COMPARISON
+  Baseline: V4 (all fp16 delta rule)
+  Patched:  V4 + delta-fp32 (exp/matmul/reduce in fp32 for prefill)
+========================================================================
+
+  Total prompt tokens: 297
+  Block 1: 256 tokens (full batch)
+  Block 2: 41 tokens (tail)
+
+========================================================================
+  PHASE 1: BASELINE
+========================================================================
+
+========================================================================
+  VARIANT: BASELINE
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_milestone_3.3
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (combined)... 7s
+  chunk 0 prefill (combined)... 14s
+  chunk 1 infer  (combined)... 9s
+  chunk 1 prefill (combined)... 17s
+  chunk 2 infer  (combined)... 9s
+  chunk 2 prefill (combined)... 17s
+  chunk 3 infer  (combined)... 9s
+  chunk 3 prefill (combined)... 17s
+  chunk 4 infer  (combined)... 9s
+  chunk 4 prefill (combined)... 17s
+  chunk 5 infer  (combined)... 9s
+  chunk 5 prefill (combined)... 17s
+  chunk 6 infer  (combined)... 9s
+  chunk 6 prefill (combined)... 17s
+  chunk 7 infer  (combined)... 9s
+  chunk 7 prefill (combined)... 17s
+  chunk 8 infer  (combined)... 1s
+  chunk 8 prefill (combined)... 2s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=combined-dedup, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded. BS=256, ctx=4096, chunks=9
+
+  --- Path A: block1 batch + block2 BATCH tail ---
+  Path A: block1 tok=248046, block2 tok=248068
+
+  --- Path B: block1 batch + block2 SEQUENTIAL tail ---
+  Path B: block1 tok=248046, block2 tok=248068
+  Path B: block1 tok=248046, block2 tok=248068
+
+  --- Checkpoint 1: Block1 state equality ---
+  Block1 identical: True
+
+  --- Checkpoint 2: Per-chunk divergence in block2 ---
+   chunk | hidden_cos | hidden_max |  conv_cos |   rec_cos |    kv_cos
+  -------+------------+------------+-----------+-----------+----------
+       0 |   0.963007 |     0.0781 |  0.997242 |  0.999779 |  1.000000
+       1 |   0.965009 |     0.2715 |  0.956130 |  0.981000 |  0.991731
+       2 |   0.967212 |     0.8438 |  0.952932 |  0.989283 |  0.985233
+       3 |   0.847224 |     0.8398 |  0.829147 |  0.885240 |  0.535085
+       4 |   0.685187 |     0.7676 |  0.800845 |  0.844009 |  0.538473
+       5 |   0.589530 |     1.8730 |  0.895787 |  0.962704 |  0.950534
+       6 |   0.751754 |     2.5059 |  0.905237 |  0.954522 |  0.579871
+       7 |   0.645520 |     3.1533 |  0.916828 |  0.932497 |  0.576252
+       8 |   0.662659 |     8.7305 |  1.000000 |  1.000000 |  0.983413
+
+  --- Checkpoint 3: Final comparison ---
+  last_hidden cos=0.662659  max_abs=8.7305
+  logits cos=0.683557
+  token A=248068  B=248068  match=True
+
+  --- Experiment X: good hidden → lm_head ---
+  good hidden → lm_head → token=248068  (B_token=248068)
+  Experiment X fixes token: True
+
+  --- Experiment Y: good KV → decode ---
+  A-states + B-KV → decode → token=271
+
+  --- Experiment Z: good linear → decode ---
+  A-states + B-linear → decode → token=271
+
+  Baseline completed in 235.0s
+
+========================================================================
+  PHASE 2: PATCHED (delta-fp32)
+========================================================================
+  [force_separate] Temporarily hid combined_LUT4_dedup
+
+========================================================================
+  VARIANT: PATCHED (delta-fp32)
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_delta_fp32_test
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (separate)... 0s
+  chunk 0 prefill (separate)... 3s
+  chunk 1 infer  (separate)... 1s
+  chunk 1 prefill (separate)... 3s
+  chunk 2 infer  (separate)... 1s
+  chunk 2 prefill (separate)... 3s
+  chunk 3 infer  (separate)... 1s
+  chunk 3 prefill (separate)... 3s
+  chunk 4 infer  (separate)... 1s
+  chunk 4 prefill (separate)... 3s
+  chunk 5 infer  (separate)... 1s
+  chunk 5 prefill (separate)... 3s
+  chunk 6 infer  (separate)... 1s
+  chunk 6 prefill (separate)... 3s
+  chunk 7 infer  (separate)... 1s
+  chunk 7 prefill (separate)... 4s
+  chunk 8 infer  (separate)... 0s
+  chunk 8 prefill (separate)... 0s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=separate, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded. BS=256, ctx=4096, chunks=9
+
+  --- Path A: block1 batch + block2 BATCH tail ---
+  Path A: block1 tok=248046, block2 tok=248068
+
+  --- Path B: SKIPPED (separate mode, cross-state incompatible) ---
+  Path B: block1 tok=248046, block2 tok=248068
+
+  --- Checkpoint 1: Block1 state equality ---
+  Block1 identical: True
+
+  --- Checkpoint 2: Per-chunk divergence in block2 ---
+   chunk | hidden_cos | hidden_max |  conv_cos |   rec_cos |    kv_cos
+  -------+------------+------------+-----------+-----------+----------
+       0 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       1 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       2 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       3 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       4 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       5 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       6 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       7 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+       8 |   1.000000 |     0.0000 |  1.000000 |  1.000000 |  1.000000
+
+  --- Checkpoint 3: Final comparison ---
+  last_hidden cos=1.000000  max_abs=0.0000
+  logits cos=1.000000
+  token A=248068  B=248068  match=True
+
+  --- Experiment X: good hidden → lm_head ---
+  good hidden → lm_head → token=248068  (B_token=248068)
+  Experiment X fixes token: True
+
+  --- Experiments Y, Z: SKIPPED (separate mode) ---
+
+  Patched completed in 42.0s
+
+========================================================================
+  SUMMARY: BASELINE vs PATCHED
+========================================================================
+
+  Metric                              |     Baseline |      Patched |  Better?
+  ------------------------------------+--------------+--------------+---------
+  block1_identical                    |         True |         True |
+  chunk0 hidden cos                   |     0.963007 |     1.000000 |      YES
+
+  Per-chunk hidden cosine (A vs B):
+   chunk |     Baseline |      Patched |      Delta
+  -------+--------------+--------------+-----------
+       0 |     0.963007 |     1.000000 |  +0.036993
+       1 |     0.965009 |     1.000000 |  +0.034991
+       2 |     0.967212 |     1.000000 |  +0.032788
+       3 |     0.847224 |     1.000000 |  +0.152776
+       4 |     0.685187 |     1.000000 |  +0.314813
+       5 |     0.589530 |     1.000000 |  +0.410470
+       6 |     0.751754 |     1.000000 |  +0.248246
+       7 |     0.645520 |     1.000000 |  +0.354480
+       8 |     0.662659 |     1.000000 |  +0.337341
+
+  Per-chunk linear state cosine (A vs B):
+   chunk |     B conv |     P conv |      B rec |      P rec
+  -------+------------+------------+------------+-----------
+       0 |   0.997242 |   1.000000 |   0.999779 |   1.000000
+       1 |   0.956130 |   1.000000 |   0.981000 |   1.000000
+       2 |   0.952932 |   1.000000 |   0.989283 |   1.000000
+       3 |   0.829147 |   1.000000 |   0.885240 |   1.000000
+       4 |   0.800845 |   1.000000 |   0.844009 |   1.000000
+       5 |   0.895787 |   1.000000 |   0.962704 |   1.000000
+       6 |   0.905237 |   1.000000 |   0.954522 |   1.000000
+       7 |   0.916828 |   1.000000 |   0.932497 |   1.000000
+       8 |   1.000000 |   1.000000 |   1.000000 |   1.000000
+
+  Per-chunk KV cosine (A vs B):
+   chunk |     Baseline |      Patched |      Delta
+  -------+--------------+--------------+-----------
+       0 |     1.000000 |     1.000000 |  +0.000000
+       1 |     0.991731 |     1.000000 |  +0.008269
+       2 |     0.985233 |     1.000000 |  +0.014767
+       3 |     0.535085 |     1.000000 |  +0.464915
+       4 |     0.538473 |     1.000000 |  +0.461527
+       5 |     0.950534 |     1.000000 |  +0.049466
+       6 |     0.579871 |     1.000000 |  +0.420129
+       7 |     0.576252 |     1.000000 |  +0.423748
+       8 |     0.983413 |     1.000000 |  +0.016587
+
+  final hidden cos                    |     0.662659 |     1.000000 |      YES
+  final hidden maxabs                 |       8.7305 |       0.0000 |
+  final logits cos                    |     0.683557 |     1.000000 |      YES
+  token A==B match                    |         True |         True | 
+  token A                             |       248068 |       248068 |
+  token B                             |       248068 |       248068 |
+
+  Experiment results:
+  exp X (good hidden→lmhead)          |       248068 |       248068 |
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 644, in <module>
+    main()
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 612, in main
+    print(f"  {'exp Y (good KV→decode)':<35} | {baseline['tok_y']:>12} | {patched['tok_y']:>12} |")
+TypeError: unsupported format string passed to NoneType.__format__

@@ -1184,3 +1184,189 @@ qwen3_5_4B_milestone_3.3/
 ├── tokenizer.json, tokenizer_config.json, vocab.json, merges.txt
 └── meta.yaml
 ```
+
+---
+
+## Milestone 3.4 — Full-Attention KV Cache Write-Position Bug (ANE `slice_update` Defect)
+
+**Date**: 2025-07-17  
+**Status**: ROOT CAUSE CONFIRMED — fix applied, models require re-export  
+**Severity**: Critical — corrupts all multi-block batch prefill for prompts > batch_size tokens
+
+### Summary
+
+During multi-block batch prefill (prompts longer than `batch_size=256` tokens), the **k_cache state write in full-attention layers writes to position 0 instead of `current_pos`** in 4 of 8 FLLL chunks. This overwrites block 1's key data with block 2's keys, corrupting the attention context for all subsequent generation. The v_cache is unaffected — it always writes to the correct position.
+
+The root cause is an **ANE runtime defect**: when a CoreML `slice_update` operates directly on a `read_state` output (no intermediate `cast` op), the ANE ignores the dynamic `begin`/`end` parameters and uses the trace-time constant value (0). The asymmetry between k_cache and v_cache arises from their different PyTorch computation graphs, which produce different MIL lowering patterns.
+
+### Symptoms
+
+- **Short prompts (≤256 tokens)**: Work correctly. Single-block prefill has `current_pos=0`, which coincidentally matches the trace-time constant.
+- **Long prompts (>256 tokens)**: Block 2+ prefill corrupts block 1's k_cache data in affected chunks, causing catastrophic generation divergence.
+- **Batch vs sequential**: Sequential (token-by-token) prefill of the tail block works correctly because the infer path has different graph structure. The bug is specific to the batch prefill path.
+
+### Affected Chunks
+
+9-chunk diagnostic (`diag_kv_check.py`) with 297-token prompt (block1=256, block2=41):
+
+| Chunk | Layers | Type | k_cache block1 modified? | v_cache block1 modified? | k block2 valid norm | v block2 valid norm |
+|------:|--------|------|--------------------------|--------------------------|--------------------:|--------------------:|
+| 0 | 0–2 | LLL | — (no F layer) | — | 0.00 | 0.00 |
+| 1 | 3–6 | FLLL | unchanged ✓ | unchanged ✓ | 278.29 | 123.83 |
+| 2 | 7–10 | FLLL | unchanged ✓ | unchanged ✓ | 304.79 | 130.07 |
+| **3** | **11–14** | **FLLL** | **MODIFIED (262k cells)** | unchanged ✓ | **0.00** | 126.17 |
+| **4** | **15–18** | **FLLL** | **MODIFIED (262k cells)** | unchanged ✓ | **0.00** | 161.57 |
+| 5 | 19–22 | FLLL | unchanged ✓ | unchanged ✓ | 325.56 | 193.48 |
+| **6** | **23–26** | **FLLL** | **MODIFIED (262k cells)** | unchanged ✓ | **0.00** | 208.17 |
+| **7** | **27–30** | **FLLL** | **MODIFIED (262k cells)** | unchanged ✓ | **0.00** | 347.17 |
+| 8 | 31 | F | unchanged ✓ | unchanged ✓ | 292.45 | 610.05 |
+
+**Pattern**: Chunks {3, 4, 6, 7} have broken k_cache; chunks {1, 2, 5, 8} are correct. All v_cache writes are correct in every chunk.
+
+Detailed position analysis (`diag_kv_deep.py`, chunk 3):
+- k_cache positions 0–40: **overwritten** with block2 keys (diff_norm=371.0)
+- k_cache positions 41–255: **zeroed** (block2 padding destroyed block1 data)
+- k_cache positions 256–296: **empty** (block2 data NOT at correct position)
+- v_cache positions 0–255: unchanged (block1 preserved ✓)
+- v_cache positions 256–296: norm=126.17 (block2 data at correct position ✓)
+
+### Root Cause: ANE `slice_update` on `read_state` Ignores Dynamic Position
+
+#### The MIL Graph Difference
+
+MIL protobuf inspection (`diag_mil_ops.py`, `diag_mil_detail.py`) revealed a structural difference between working and broken chunks:
+
+**Chunk 1 (WORKING) — k_cache `slice_update`:**
+```
+[216] read_state(k_cache)      → read_state_0   (fp16)
+[235] cast(read_state_0)       → cast_8          (fp16 → fp32)    ← intermediate cast!
+[237] slice_update(x=cast_8, begin=concat_3, update=var_581_promoted)
+```
+
+**Chunk 3 (BROKEN) — k_cache `slice_update`:**
+```
+[216] read_state(k_cache)      → read_state_0   (fp16)
+[233] slice_update(x=read_state_0, begin=concat_3, update=var_581)  ← NO cast!
+```
+
+**Both chunks — v_cache `slice_update` (ALWAYS WORKING):**
+```
+[245] read_state(v_cache)      → read_state_1   (fp16)
+[252] cast(read_state_1)       → cast_10         (fp16 → fp32)    ← always has cast
+[254] slice_update(x=cast_10, begin=concat_3, update=var_605_promoted)
+```
+
+The `begin` parameter (`concat_3`) correctly references `current_pos` through `slice_by_index → expand_dims → concat` in ALL chunks — the dynamic position chain is identical. The difference is solely whether `x` goes through a `cast` op.
+
+#### The ANE Defect
+
+When `slice_update` receives `read_state` output directly as `x` (no intermediate operation):
+- The ANE runtime **ignores the dynamic `begin`/`end` parameters**
+- It uses the **trace-time constant value** instead (which is 0, since `current_pos = torch.zeros((1,))` during tracing)
+
+When there is a `cast` op between `read_state` and `slice_update`:
+- The ANE runtime **correctly evaluates the dynamic `begin`/`end` parameters**
+- The write goes to the correct position
+
+This is an Apple Neural Engine runtime bug — the MIL graph is semantically correct in both cases, but the ANE hardware/firmware handles the two patterns differently.
+
+#### Why Some Chunks Have the Cast and Others Don't
+
+The asymmetry comes from the PyTorch computation graph during `torch.jit.trace`:
+
+**key_states path:**
+```python
+# RoPE: split → cos/sin multiply → concat
+k_rot = k[:, :, :, :rope_dim] * cos + neg_half_rotate(k[:, :, :, :rope_dim]) * sin
+k_pass = k[:, :, :, rope_dim:]
+key_states = torch.cat([k_rot, k_pass], dim=-1)   # can stay pure fp16
+```
+
+The RoPE concat + squeeze can be an entirely fp16 computation. When LUT quantization produces weights that keep this chain in fp16, coremltools sees **no type mismatch** between `key_states` (fp16) and `k_cache` state (fp16), so it omits the promotion cast → direct `read_state → slice_update` → bug.
+
+**value_states path:**
+```python
+# No RoPE — just project, reshape, transpose
+v = v_proj(x)
+value_states = v.reshape(B, S, num_heads, head_dim).transpose(1, 2)
+```
+
+The `transpose` operation in the value path triggers a different code generation path in coremltools that **always introduces a type promotion cast**. This is why `v_cache` always gets the pattern `read_state → cast → slice_update` and always works.
+
+#### Why Block 1 Works Despite the Bug
+
+Block 1 prefill uses `current_pos=0`. The ANE's fallback to the trace-time constant also produces position 0. The write destination is correct by coincidence:
+
+| Block | `current_pos` | ANE actual write pos | Correct pos | Result |
+|-------|---------------|---------------------|-------------|--------|
+| block1 | 0 | 0 | 0 | **Correct** (coincidence) |
+| block2 | 256 | 0 | 256 | **WRONG** — overwrites block1 |
+| block3 | 512 | 0 | 512 | **WRONG** — overwrites block1 |
+
+This is why the bug is invisible for prompts ≤ `batch_size` tokens, and only manifests for multi-block prompts.
+
+### Fix
+
+**File**: `anemll/models/qwen3_5_model.py`  
+**Both infer (single-token decode) and prefill (batch) paths.**
+
+Force `.float()` on key/value states before writing to the fp16 state tensor. This guarantees coremltools always inserts a `cast` op between `read_state` and `slice_update`:
+
+```python
+# Before (vulnerable):
+k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
+v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+
+# After (fixed):
+key_write = key_states.squeeze(0).float()    # force fp32 promotion
+value_write = value_states.squeeze(0).float()
+k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write   # coremltools inserts cast
+v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_write
+```
+
+This produces the MIL pattern `read_state → cast → slice_update` for ALL chunks, which the ANE handles correctly.
+
+**Note**: This fix changes the traced graph. Models must be **re-exported** (`export.py`), **re-combined** (`combine.py`), and **re-compiled** (`compile.py`) for the fix to take effect. Existing compiled `.mlmodelc` files will still have the bug.
+
+### Diagnostic Scripts
+
+All in `tests/dev/`:
+
+| Script | Purpose |
+|--------|---------|
+| `diag_kv_check.py` | End-to-end test: block1 prefill → snapshot KV → block2 prefill → compare. Reports per-chunk k/v cache modifications, padding correctness, and valid norms. |
+| `diag_kv_deep.py` | Position-level analysis: dumps exact positions where k_cache was written, confirming write goes to pos 0 instead of `current_pos`. |
+| `diag_mil_ops.py` | MIL protobuf inspection: finds all `slice_update`/`read_state` ops in pre-combine `.mlpackage` files. |
+| `diag_mil_detail.py` | Deep MIL trace: follows the `x`, `begin`, `end`, `update` inputs of k/v cache `slice_update` ops backwards through the graph, revealing the presence/absence of `cast` ops. |
+
+### Relation to Delta-FP32 Experiment
+
+The `DELTA_FP32_RESULTS.md` baseline measurements showed KV cosine dropping to 0.535–0.580 for chunks {3, 4, 6, 7} — **exactly the same chunks** now identified as having the k_cache write-position bug. The previously attributed "batch tail divergence" was not floating-point precision error — it was **k_cache corruption from writing to position 0**.
+
+| Chunk | KV cos (baseline) | k_cache bug? |
+|------:|-------------------:|:------------:|
+| 1 | 0.992 | No |
+| 2 | 0.985 | No |
+| 3 | **0.535** | **Yes** |
+| 4 | **0.538** | **Yes** |
+| 5 | 0.951 | No |
+| 6 | **0.580** | **Yes** |
+| 7 | **0.576** | **Yes** |
+| 8 | 0.983 | No |
+
+The residual divergence in working chunks (KV cos 0.951–0.992) is genuine fp16 precision drift. The catastrophic divergence in broken chunks (0.535–0.580) was the write-position bug.
+
+### Implications for Other Architectures
+
+This ANE `slice_update` defect is not specific to Qwen3.5. **Any model** that:
+1. Uses CoreML `StateType` (registered buffers / `ct.StateType`)
+2. Performs dynamic-position `slice_update` on state tensors
+3. Has a computation graph where the update value stays in the same dtype as the state (no promotion cast needed)
+
+...is potentially vulnerable. Models to audit:
+- `gemma3_model.py` — uses `fake_key_cache[:, pos:pos+seq_len, :]` pattern
+- `qwen_model.py` — same pattern
+- `qwen2_5_model.py` — same pattern
+- Any future model with 4D state tensors and dynamic position writes
+
+The safest mitigation is to **always force a type promotion** (`.float()`) before writing to state tensors, ensuring coremltools always generates a `cast` between `read_state` and `slice_update`.

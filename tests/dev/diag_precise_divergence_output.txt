@@ -1,0 +1,223 @@
+/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+========================================================================
+  PRECISE DIVERGENCE LOCALIZATION
+  Path A: block1 batch + block2 batch tail
+  Path B: block1 batch + block2 sequential tail
+========================================================================
+
+  Loading engine (CPU_AND_NE)...
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (separate)... 6s
+  chunk 0 prefill (separate)... 14s
+  chunk 1 infer  (separate)... 8s
+  chunk 1 prefill (separate)... 17s
+  chunk 2 infer  (separate)... 8s
+  chunk 2 prefill (separate)... 17s
+  chunk 3 infer  (separate)... 8s
+  chunk 3 prefill (separate)... 17s
+  chunk 4 infer  (separate)... 8s
+  chunk 4 prefill (separate)... 17s
+  chunk 5 infer  (separate)... 8s
+  chunk 5 prefill (separate)... 17s
+  chunk 6 infer  (separate)... 8s
+  chunk 6 prefill (separate)... 17s
+  chunk 7 infer  (separate)... 8s
+  chunk 7 prefill (separate)... 17s
+  chunk 8 infer  (separate)... 1s
+  chunk 8 prefill (separate)... 2s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=separate, prefill=batch-256, stop_ids={248044, 248046}
+  Engine loaded in 199.0s
+  BS=256 CTX=4096 chunks=9
+
+  Prompt: 'What is the capital of France?'
+  Total tokens from template: 17
+  Extended prompt tokens: 289
+  Block1: 256, Tail: 33
+
+========================================================================
+  CHECKPOINT 1: Block1 (identical for both paths)
+========================================================================
+
+  Path A block1 done: pos=256
+  Path B block1 done: pos=256
+
+  Block1 state comparison (A vs B):
+    ✓ All states BIT-IDENTICAL after block1
+
+========================================================================
+  CHECKPOINT 2: Block2 per-chunk divergence
+========================================================================
+
+  Running Path A (batch tail)...
+  Restoring block1 state for Path B...
+  Running Path B (sequential tail)...
+
+  Path A token: 90700
+  Path B token: 8160
+  Token match: False
+
+  Control inputs for Path A (batch):
+    current_pos: 256
+    valid_len: 33
+    block_start: 256
+    position_ids_first: 256
+    position_ids_last_valid: 288
+  Control inputs for Path B (sequential):
+    start_pos: 256
+    num_tokens: 33
+
+  Per-chunk divergence (A=batch vs B=sequential):
+  chunk   hidden_cos   hidden_mx     k_cos     v_cos   conv_cos   rec_cos   k_L2ratio  conv_L2ratio
+  ─────  ───────────  ──────────  ────────  ────────  ─────────  ────────  ──────────  ────────────
+      0     0.972827      0.2705    1.0000    1.0000   0.996805  0.999751      0.0000        0.9966
+      1     0.953882      0.1186    0.9926    0.9928   0.964352  0.984868      0.9990        0.9882
+      2     0.963989      0.1180    0.9903    0.9882   0.978183  0.980787      1.0000        1.0026
+      3     0.885597      0.2286    0.1142    0.9772   0.898829  0.913381      0.3383        1.0118
+      4     0.860457      0.9141    0.1325    0.9500   0.851149  0.887835      0.3361        0.9937
+      5     0.947357      2.2266    0.9634    0.9561   0.929628  0.976925      0.9996        0.9812
+      6     0.940157     22.1250    0.1737    0.9781   0.921960  0.964762      0.3369        0.9632
+      7     0.683208      5.4902    0.1495    0.9881   0.904034  0.925690      0.3352        1.0118
+      8     0.693834      8.7012    0.9766    0.9927   1.000000  1.000000      1.0004        0.0000
+
+  First diverging chunk: 0
+  First diverging state type: hidden
+
+  Detailed chunk 0 comparison:
+    hidden:   cos=0.97282681  max_abs=0.270508  A_L2=2.5441  B_L2=2.7802
+    k_cache : cos=1.00000000  max_abs=0.000000  A_L2=0.0000  B_L2=0.0000
+    v_cache : cos=1.00000000  max_abs=0.000000  A_L2=0.0000  B_L2=0.0000
+    conv:     cos=0.99680463  max_abs=1.046875  A_L2=389.5589  B_L2=390.8994
+    rec:      cos=0.99975098  max_abs=0.088257  A_L2=38.0368  B_L2=38.0254
+
+========================================================================
+  CHECKPOINT 3: Final state after block2
+========================================================================
+
+  Final hidden: cos=0.69383421  max_abs=8.701172
+    A_L2=161.9859  B_L2=160.7706
+  Logits:       cos=0.75821996  max_abs=7.939453
+  Top-5 A: [np.int64(90700), np.int64(8160), np.int64(760), np.int64(2381), np.int64(97237)]
+  Top-5 B: [np.int64(8160), np.int64(90700), np.int64(760), np.int64(16), np.int64(7)]
+  Token A: 90700
+  Token B: 8160
+
+  Final state divergence per chunk:
+  chunk     k_cos     v_cos   conv_cos   rec_cos
+  ─────  ────────  ────────  ─────────  ────────
+      0    1.0000    1.0000   0.996805  0.999751
+      1    0.9926    0.9928   0.964352  0.984868
+      2    0.9903    0.9882   0.978183  0.980787
+      3    0.1142    0.9772   0.898829  0.913381
+      4    0.1325    0.9500   0.851149  0.887835
+      5    0.9634    0.9561   0.929628  0.976925
+      6    0.1737    0.9781   0.921960  0.964762
+      7    0.1495    0.9881   0.904034  0.925690
+      8    0.9766    0.9927   1.000000  1.000000
+
+========================================================================
+  EXPERIMENT X: Replace BAD final hidden with GOOD → lm_head
+========================================================================
+  BAD path token:                90700
+  GOOD path token:               8160
+  BAD path + GOOD hidden → token: 8160
+  Does swapping hidden fix token? True
+
+========================================================================
+  EXPERIMENT Y: Good KV states + Bad linear → decode 1 token
+========================================================================
+  Decoded from BAD (all bad states):  (would need separate run)
+  Decoded from GOOD (all good states): 579
+  Decoded from MIXED (good KV + bad linear): 8340
+  Logits cos (mixed vs good): 0.516418
+  Decoded from BAD (all bad states):   8340
+  Does KV swap fix decode? False
+
+========================================================================
+  EXPERIMENT Z: Good linear states + Bad KV → decode 1 token
+========================================================================
+  Decoded from BAD (all bad states):    8340
+  Decoded from GOOD (all good states):  579
+  Decoded from MIXED (good linear + bad KV): 8340
+  Logits cos (mixed vs good): 0.573557
+  Does linear swap fix decode? False
+
+========================================================================
+  PER-CHUNK KV SWAP: Good KV one chunk at a time
+========================================================================
+  swap_chunk  decode_tok   logits_cos  matches_good
+  ──────────  ──────────  ───────────  ────────────
+           0        8340     0.543929             0
+           1        8340     0.536845             0
+           2        8340     0.541417             0
+           3        8340     0.565123             0
+           4        8340     0.533468             0
+           5        8340     0.548088             0
+           6        8340     0.563108             0
+           7        8340     0.532568             0
+           8        8340     0.540573             0
+
+========================================================================
+  PER-CHUNK LINEAR SWAP: Good linear one chunk at a time
+========================================================================
+  swap_chunk  decode_tok   logits_cos  matches_good
+  ──────────  ──────────  ───────────  ────────────
+           0        8340     0.533571             0
+           1        8340     0.553459             0
+           2        8340     0.562642             0
+           3        8340     0.540166             0
+           4        8340     0.499724             0
+           5        8340     0.544717             0
+           6        8340     0.558959             0
+           7        8340     0.559653             0
+           8        8340     0.543929             0
+
+========================================================================
+  CURRENT_POS SEMANTIC TEST
+  Default: current_pos = blockStart
+  Alternative: current_pos = blockStart + validLen - 1
+========================================================================
+
+  Default current_pos: 256
+  Alternative current_pos: 288
+
+  Token (default current_pos):     90700
+  Token (alt current_pos):          90700
+  Token (sequential/GOOD):          8160
+  Does alt current_pos match GOOD?  False
+  Logits cos (alt vs good): 0.74438493
+  Logits cos (def vs good): 0.75821996
+
+  Per-chunk divergence (alt_cur_pos A' vs sequential B):
+  chunk   hidden_cos     k_cos     v_cos   conv_cos   rec_cos
+  ─────  ───────────  ────────  ────────  ─────────  ────────
+      0     0.972827    1.0000    1.0000   0.996805  0.999751
+      1     0.946997    0.8838    0.8968   0.952506  0.980553
+      2     0.926676    0.8872    0.8946   0.964359  0.979924
+      3     0.871169    0.1147    0.8902   0.902547  0.911919
+      4     0.855830    0.1317    0.8866   0.855627  0.890064
+      5     0.935047    0.8864    0.8964   0.930868  0.977012
+      6     0.945063    0.1731    0.8874   0.922552  0.964565
+      7     0.702576    0.1491    0.8950   0.905542  0.929590
+      8     0.673335    0.8861    0.8918   1.000000  1.000000
+
+========================================================================
+  ALL EXPERIMENTS COMPLETE
+========================================================================

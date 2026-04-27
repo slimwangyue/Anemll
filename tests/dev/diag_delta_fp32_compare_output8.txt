@@ -1,0 +1,188 @@
+/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+========================================================================
+  DELTA-FP32 A/B COMPARISON
+  Baseline: V4 (all fp16 delta rule)
+  Patched:  V4 + delta-fp32 (exp/matmul/reduce in fp32 for prefill)
+========================================================================
+
+  Total prompt tokens: 297
+  Block 1: 256 tokens (full batch)
+  Block 2: 41 tokens (tail)
+
+========================================================================
+  PHASE 1: BASELINE
+========================================================================
+
+========================================================================
+  VARIANT: BASELINE
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_milestone_3.3
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (combined)... 7s
+  chunk 0 prefill (combined)... 14s
+  chunk 1 infer  (combined)... 9s
+  chunk 1 prefill (combined)... 17s
+  chunk 2 infer  (combined)... 9s
+  chunk 2 prefill (combined)... 17s
+  chunk 3 infer  (combined)... 9s
+  chunk 3 prefill (combined)... 17s
+  chunk 4 infer  (combined)... 9s
+  chunk 4 prefill (combined)... 17s
+  chunk 5 infer  (combined)... 9s
+  chunk 5 prefill (combined)... 17s
+  chunk 6 infer  (combined)... 9s
+  chunk 6 prefill (combined)... 17s
+  chunk 7 infer  (combined)... 9s
+  chunk 7 prefill (combined)... 17s
+  chunk 8 infer  (combined)... 2s
+  chunk 8 prefill (combined)... 3s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+[engine] Ready! CTX=4096, BATCH=256, crossover=32, mode=combined-dedup, prefill=batch-256, stop_ids={248044, 248046}
+  Loaded. BS=256, ctx=4096, chunks=9
+
+  --- Path A: block1 batch + block2 BATCH tail ---
+  Path A: block1 tok=248046, block2 tok=248068
+
+  --- Path B: block1 batch + block2 SEQUENTIAL tail ---
+  Path B: block1 tok=248046, block2 tok=248068
+
+  --- Checkpoint 1: Block1 state equality ---
+  Block1 identical: True
+
+  --- Checkpoint 2: Per-chunk divergence in block2 ---
+   chunk | hidden_cos | hidden_max |  conv_cos |   rec_cos |    kv_cos
+  -------+------------+------------+-----------+-----------+----------
+       0 |   0.963007 |     0.0781 |  0.997242 |  0.999779 |  1.000000
+       1 |   0.965009 |     0.2715 |  0.956130 |  0.981000 |  0.991731
+       2 |   0.967212 |     0.8438 |  0.952932 |  0.989283 |  0.985233
+       3 |   0.847224 |     0.8398 |  0.829147 |  0.885240 |  0.535085
+       4 |   0.685187 |     0.7676 |  0.800845 |  0.844009 |  0.538473
+       5 |   0.589530 |     1.8730 |  0.895787 |  0.962704 |  0.950534
+       6 |   0.751754 |     2.5059 |  0.905237 |  0.954522 |  0.579871
+       7 |   0.645520 |     3.1533 |  0.916828 |  0.932497 |  0.576252
+       8 |   0.662659 |     8.7305 |  1.000000 |  1.000000 |  0.983413
+
+  --- Checkpoint 3: Final comparison ---
+  last_hidden cos=0.662659  max_abs=8.7305
+  logits cos=0.683557
+  token A=248068  B=248068  match=True
+
+  --- Experiment X: good hidden → lm_head ---
+  good hidden → lm_head → token=248068  (B_token=248068)
+  Experiment X fixes token: True
+
+  --- Experiment Y: good KV → decode ---
+  A-states + B-KV → decode → token=271
+
+  --- Experiment Z: good linear → decode ---
+  A-states + B-linear → decode → token=271
+
+  Baseline completed in 234.6s
+
+========================================================================
+  PHASE 2: PATCHED (delta-fp32)
+========================================================================
+  [MONKEY] _load_model patch installed, prefill CU=ComputeUnit.CPU_AND_GPU
+  [force_separate] Temporarily hid combined_LUT4_dedup
+
+========================================================================
+  VARIANT: PATCHED (delta-fp32)
+  Model dir: /Volumes/MySSD/Anemll/qwen3_5_4B_delta_fp32_test
+========================================================================
+[engine] Loading tokenizer...
+[engine] Loading embed + lmhead from separate .mlmodelc files...
+  embed_single loaded (seq_len=1)
+  embed_prefill loaded (seq_len=512)
+  lm_head_nosplit loaded (single logits output)
+[engine] Loading FFN chunks (infer + prefill)...
+  chunk 0 infer  (separate)... 6s
+  chunk 0 prefill (separate)... 11s
+  chunk 1 infer  (separate)... 8s
+  chunk 1 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk1.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 2 infer  (separate)... 8s
+  chunk 2 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk2.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 3 infer  (separate)... 8s
+  chunk 3 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk3.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 4 infer  (separate)... 8s
+  chunk 4 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk4.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 5 infer  (separate)... 8s
+  chunk 5 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk5.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 6 infer  (separate)... 8s
+  chunk 6 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk6.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 7 infer  (separate)... 8s
+  chunk 7 prefill (separate)...E5RT encountered an STL exception. msg = MILCompilerForANE error: failed to compile ANE model using ANEF. Error=_ANECompiler : ANECCompile() FAILED./Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py:628: RuntimeWarning: You will not be able to run predict() on this Core ML model. Underlying exception message was: {
+    NSLocalizedDescription = "Failed to build the model execution plan using a model architecture file '/private/var/folders/r5/dn4v9jhx1cvg33xnvt8nmjxr0000gn/T/prefill_LUT4_chunk7.mlmodelc/model.mil' with error code: -14.";
+}
+  _warnings.warn(
+ 13s
+  chunk 8 infer  (separate)... 1s
+  chunk 8 prefill (separate)... 2s
+    chunk0 state: conv=(3, 1024, 32), rec=(3, 32, 128, 128)
+    chunk1 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk2 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk3 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk4 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk5 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk6 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk7 state: conv=(4, 1024, 32), rec=(4, 32, 128, 128)
+    chunk8 state: conv=(1, 1024, 32), rec=(1, 32, 128, 128)
+    KV state names: ['k_cache', 'v_cache']
+    prefill batch_size auto-detected (chunk0 prefill): 256
+[engine] ⚠️ Prefill batch size auto-detected=256 (overriding module BATCH_SIZE=512)
+Traceback (most recent call last):
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 657, in <module>
+    main()
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 538, in main
+    patched = run_variant(PATCHED_DIR, "PATCHED (delta-fp32)", all_ids, block1_ids, block2_ids, BS,
+  File "/Volumes/MySSD/Anemll/tests/dev/diag_delta_fp32_compare.py", line 332, in run_variant
+    engine.load()
+  File "/Volumes/MySSD/Anemll/tests/dev/../../scripts_qwen3_5/chat_server.py", line 665, in load
+    self._reset_states()
+  File "/Volumes/MySSD/Anemll/tests/dev/../../scripts_qwen3_5/chat_server.py", line 862, in _reset_states
+    self.states = [m.make_state() for m in self.prefills]
+  File "/Volumes/MySSD/Anemll/tests/dev/../../scripts_qwen3_5/chat_server.py", line 862, in <listcomp>
+    self.states = [m.make_state() for m in self.prefills]
+  File "/Volumes/MySSD/Anemll/.venv_qwen35/lib/python3.9/site-packages/coremltools/models/model.py", line 952, in make_state
+    raise Exception("This model was not loaded with the Core ML Framework. Cannot get state.")
+Exception: This model was not loaded with the Core ML Framework. Cannot get state.

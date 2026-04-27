@@ -1806,9 +1806,11 @@ class Qwen35Model(nn.Module):
         pos = current_pos[0]
         # Use kv_cache_idx (F-layer-only index) if provided, else fall back to local_layer_idx.
         _kv_idx = kv_cache_idx if kv_cache_idx is not None else local_layer_idx
+        key_write = key_states.squeeze(0)
+        value_write = value_states.squeeze(0)
         if k_cache is not None and v_cache is not None:
-            k_cache[_kv_idx, :, pos:pos+1, :] = key_states.squeeze(0)
-            v_cache[_kv_idx, :, pos:pos+1, :] = value_states.squeeze(0)
+            k_cache[_kv_idx, :, pos:pos+1, :] = key_write.float()
+            v_cache[_kv_idx, :, pos:pos+1, :] = value_write.float()
             key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
             value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
@@ -1816,8 +1818,8 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx, :, pos:pos+1, :] = key_states.squeeze(0)
-            kv_cache_0[value_idx, :, pos:pos+1, :] = value_states.squeeze(0)
+            kv_cache_0[key_idx, :, pos:pos+1, :] = key_write.float()
+            kv_cache_0[value_idx, :, pos:pos+1, :] = value_write.float()
             key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
             value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_regular(
@@ -2037,9 +2039,11 @@ class Qwen35Model(nn.Module):
         pos = current_pos[0]
         # Use kv_cache_idx (F-layer-only index) if provided, else fall back to local_layer_idx.
         _kv_idx = kv_cache_idx if kv_cache_idx is not None else local_layer_idx
+        key_write = key_states.squeeze(0)
+        value_write = value_states.squeeze(0)
         if k_cache is not None and v_cache is not None:
-            k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
-            v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+            k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write.float()
+            v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_write.float()
             key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
             value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
@@ -2047,8 +2051,8 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
-            kv_cache_0[value_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
+            kv_cache_0[key_idx, :, pos:pos+seq_len, :] = key_write.float()
+            kv_cache_0[value_idx, :, pos:pos+seq_len, :] = value_write.float()
             key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
             value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_prefill(
