@@ -374,7 +374,7 @@ SYSTEM_PROMPT = None    # no system prompt by default (better quality for quanti
 # that cascades through 32 layers to produce significant hidden/logit
 # divergence (max_diff ≈ 8.3 at output).  Disable batch prefill until the
 # model export is fixed to use force_recurrent=True in the prefill path.
-PREFILL_CROSSOVER = 32  # batch prefill for prompts >= 32 tokens (cs=32 validated on ANE)
+PREFILL_CROSSOVER = 32  # batch prefill for prompts >= 32 tokens
 
 
 # ── Repetition Detection ─────────────────────────────────────────────
@@ -427,16 +427,25 @@ def _cleanup_ane_temp():
     """Remove stale ANE compilation temps from boot drive."""
     import glob, tempfile
     tmp = tempfile.gettempdir()
-    for p in glob.glob(os.path.join(tmp, "*.mlmodelc")):
-        try:
-            import shutil; shutil.rmtree(p)
-        except Exception:
-            pass
-    for p in glob.glob(os.path.join(tmp, "TemporaryItems", "NSIRD_Python_*")):
-        try:
-            import shutil; shutil.rmtree(p)
-        except Exception:
-            pass
+    # Also clean the real system temp (CoreML ignores TMPDIR)
+    try:
+        sys_tmp = os.confstr("CS_DARWIN_USER_TEMP_DIR")
+    except (ValueError, OSError):
+        sys_tmp = None
+    dirs_to_clean = [tmp]
+    if sys_tmp and sys_tmp != tmp:
+        dirs_to_clean.append(sys_tmp)
+    for d in dirs_to_clean:
+        for p in glob.glob(os.path.join(d, "*.mlmodelc")):
+            try:
+                import shutil; shutil.rmtree(p)
+            except Exception:
+                pass
+        for p in glob.glob(os.path.join(d, "TemporaryItems", "NSIRD_Python_*")):
+            try:
+                import shutil; shutil.rmtree(p)
+            except Exception:
+                pass
 
 
 def _load_model(path, compute_unit, function_name=None):
@@ -650,7 +659,7 @@ class ChatEngine:
         self._mask_buf = np.full(
             (1, 1, 1, self.ctx), -65504.0, dtype=np.float16)
         self._pos_buf = np.zeros(1, dtype=np.int32)
-        self._rope_buf = np.zeros(1, dtype=np.int32)  # logical RoPE position
+        self._rope_buf = np.zeros((3, 1), dtype=np.int32)  # MRoPE position [3, 1] for decode
 
         # Pre-allocate batch prefill buffers using detected batch size
         bs = self._prefill_bs
@@ -659,7 +668,7 @@ class ChatEngine:
         self._valid_len_buf = np.zeros((1,), dtype=np.int32)
         self._batch_mask_buf = np.full(
             (1, 1, bs, self.ctx), -65504.0, dtype=np.float16)
-        self._batch_pos_buf = np.zeros(bs, dtype=np.int32)
+        self._batch_pos_buf = np.zeros((3, bs), dtype=np.int32)
         self._batch_cur_buf = np.zeros(1, dtype=np.int32)
 
         self._reset_states()
@@ -983,7 +992,7 @@ class ChatEngine:
         pos_arr[0] = pos
 
         rope_arr = self._rope_buf
-        rope_arr[0] = pos + self.rope_offset
+        rope_arr[:] = pos + self.rope_offset
 
         for ci in range(self.num_chunks):
             inp = {
@@ -1023,7 +1032,7 @@ class ChatEngine:
         pos_arr[0] = pos
 
         rope_arr = self._rope_buf
-        rope_arr[0] = pos + self.rope_offset
+        rope_arr[:] = pos + self.rope_offset
 
         for ci in range(self.num_chunks):
             inp = {
@@ -1087,10 +1096,13 @@ class ChatEngine:
             mask[0, 0, i, 0] = 0.0
 
         pos_ids = self._batch_pos_buf
-        pos_ids[:valid_len] = np.arange(
+        rope_val = np.arange(
             block_start + self.rope_offset,
             block_start + self.rope_offset + valid_len, dtype=np.int32)
-        pos_ids[valid_len:] = 0  # padding positions — meaningless
+        # Fill all 3 MRoPE dimensions identically for text-only
+        for d in range(3):
+            pos_ids[d, :valid_len] = rope_val
+            pos_ids[d, valid_len:] = 0  # padding positions — meaningless
 
         cur_pos = self._batch_cur_buf
         cur_pos[0] = block_start
@@ -1240,9 +1252,14 @@ class ChatEngine:
                      and self.pos + bs <= self.ctx)
 
         # ── Batch prefill path ──
+        # All full blocks are batch-prefilled on ANE.  The .float()
+        # cast on key_write/value_write in qwen3_5_model.py ensures
+        # coremltools always generates a cast op between read_state
+        # and slice_update, which is required for ANE to correctly
+        # evaluate dynamic position parameters (see MILESTONE_3.md).
         if use_batch:
             chunks = _chunk_tokens(prompt_tokens, bs)
-            for block in chunks:
+            for block_idx, block in enumerate(chunks):
                 block_len = len(block)
                 if self.pos + bs > self.ctx:
                     # Not enough state slots for a full block — hand

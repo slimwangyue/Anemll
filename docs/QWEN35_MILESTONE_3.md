@@ -195,9 +195,153 @@ CHUNK_RANGES = [
 ## Next Steps
 
 - [x] Re-export all 9 chunks with `--fp32-compute` for production accuracy
+- [x] Fix KV cache write-position bug in batch prefill (Milestone 3.4)
 - [ ] Measure end-to-end FP32 decode latency (estimated ~13 ms/chunk → ~9.5 tok/s with 9 chunks)
 - [ ] Overlap lm_head (CPU/GPU) with ANE FFN chunk execution
 - [ ] Upload FLLL 9-chunk LUT6 models to HuggingFace
+
+---
+
+## Milestone 3.4 — KV Cache Write-Position Fix (Stable)
+
+**Date**: 2026-04-27
+**Status**: **STABLE** — verified on ANE across all 9 chunks
+
+### Problem
+
+Batch prefill (BS=256) spanning multiple blocks corrupts the KV cache: block 2's
+`slice_update` silently overwrites block 1's values at positions 0–255 instead
+of writing to positions 256+. This causes attention to attend to garbage keys
+and values for the first block, producing incoherent generation for prompts
+longer than one batch.
+
+**Root cause**: CoreML's `slice_update` op, when operating directly on a
+`read_state` output (FP16 state tensor), ignores dynamic `begin`/`end` indices
+and writes to position 0 regardless of the `current_pos` value. This is an ANE
+runtime bug — the same model works correctly on CPU_ONLY.
+
+### Why `.float()` in model code is NOT the fix
+
+Adding `.float()` casts to KV cache writes in `qwen3_5_model.py` was initially
+attempted but **reverted** for two reasons:
+
+1. **ANE compiler failure**: The `.float()` casts increase the traced graph size,
+   causing some chunks to exceed ANE compiler limits and fail to compile.
+2. **MIL optimization strips them**: For **prefill** chunks 2–7, the `combine.py`
+   step calls `_save_multifunction_dedup` which re-runs MIL optimization passes.
+   These passes **strip the cast ops** as redundant, restoring the broken direct
+   pattern:
+
+```
+read_state(FP16) → slice_update(FP16)  ← dynamic indices ignored on ANE
+```
+
+### Actual Fix: V4 Precision + Post-Combine Protobuf Surgery
+
+The production fix uses two mechanisms:
+
+1. **V4 precision policy** (`--v4-precision` in `export.py`, ON by default):
+   Marks `kv_cache_state` ops in F-layers as FP32 during export. This creates
+   the needed `cast` ops between `read_state` and `slice_update` for decode
+   models and some prefill chunks.
+
+2. **Post-combine protobuf surgery** (`fix_combined_protobuf.py`):
+   After `combine.py` merges infer+prefill and MIL optimization strips the V4
+   casts, this script directly edits the CoreML protobuf to re-inject them,
+   bypassing MIL optimization entirely.
+
+For each `read_state → slice_update` pattern targeting `k_cache` or `v_cache`:
+
+```
+BEFORE (broken):
+  read_state(k_cache) → FP16 state
+  slice_update(x=FP16_state, update=FP16_keys)  ← ignores dynamic pos
+  write_state(k_cache)
+
+AFTER (fixed):
+  read_state(k_cache) → FP16 state
+  cast(state, FP32) → FP32 state          ← injected
+  cast(keys, FP32) → FP32 keys            ← injected
+  slice_update(x=FP32_state, update=FP32_keys)  ← respects dynamic pos
+  cast(result, FP16) → FP16 result        ← injected
+  write_state(k_cache)
+```
+
+Both `x` (state) and `update` (keys/values) must be cast to FP32 because the
+CoreML compiler maps `slice_update` to `ios18.slice_update` internally, which
+enforces that both tensors have matching dtypes.
+
+The fix also applies to separate prefill `.mlpackage` files (via `--separate`
+flag) where the export's MIL passes stripped v_cache casts but kept k_cache
+casts.
+
+### Cast injection summary
+
+| Chunk | Prefill casts injected | Notes |
+|-------|----------------------|-------|
+| 0 | 0 | No Full-attention layers (LLL) |
+| 1 | 0 | Casts survive from export (chunk1 pattern) |
+| 2 | 1 | 1 Full-attention layer (k+v) |
+| 3 | 2 | 2 Full-attention layers |
+| 4 | 1 | 1 Full-attention layer |
+| 5 | 2 | 2 Full-attention layers |
+| 6 | 2 | 2 Full-attention layers |
+| 7 | 2 | 2 Full-attention layers |
+| 8 | 0 | No Full-attention layers needing fix |
+| **Total** | **10** | |
+
+### Pipeline integration
+
+The fix is a post-combine step inserted into the conversion pipeline:
+
+```bash
+# 1. Export all chunks
+python scripts_qwen3_5/export.py --model-dir $OUT
+
+# 2. Combine infer+prefill into multi-function packages
+python scripts_qwen3_5/combine.py --input $OUT
+
+# 3. Inject KV cache casts (NEW — post-combine protobuf fix)
+python scripts_qwen3_5/fix_combined_protobuf.py --model-dir $OUT --separate
+
+# 4. Compile
+python scripts_qwen3_5/compile.py --model-dir $OUT
+```
+
+### Verification
+
+**Test**: `tests/dev/diag_kv_check.py` — loads all 9 combined chunks on ANE,
+runs 2-block prefill (block1=256 tokens, block2=41 tokens), checks KV integrity:
+
+| Check | Result |
+|-------|--------|
+| Block1 KV preserved after block2 (all 18 k/v caches) | **PASS** |
+| Padding positions (297–511) remain zero | **PASS** |
+| Block2 KV norms healthy (non-zero in Full-attn chunks) | **PASS** |
+| All 9 chunks compile with coremlcompiler | **PASS** (0 failures) |
+| All 9 chunks load on CPU_AND_NE | **PASS** |
+
+### Files modified
+
+| File | Change |
+|------|--------|
+| `anemll/models/qwen3_5_model.py` | `.float()` casts REVERTED — V4 precision handles this at export time |
+| `scripts_qwen3_5/export.py` | V4 precision (default ON) keeps kv_cache_state ops in FP32 |
+| `scripts_qwen3_5/fix_combined_protobuf.py` | New: post-combine protobuf cast injection |
+| `tests/dev/diag_kv_check.py` | New: 2-block prefill KV integrity test |
+| `tests/dev/diag_kv_minimal.py` | New: minimal single-chunk KV test |
+
+### Design status
+
+**STABLE**. The 9-chunk FLLL partition with LUT4 FFN / LUT6 embeddings and
+post-combine KV cache protobuf fix is the production design for Qwen3.5-4B.
+The conversion pipeline is:
+
+```
+export → combine → fix_combined_protobuf → compile
+```
+
+All components are verified end-to-end on Apple Neural Engine (M4 Pro).
 - [ ] Integrate into `anemll-swift-cli` and ANEMLLChat app
 - [ ] Extended long-context generation testing (>500 tokens)
 
@@ -1189,8 +1333,8 @@ qwen3_5_4B_milestone_3.3/
 
 ## Milestone 3.4 — Full-Attention KV Cache Write-Position Bug (ANE `slice_update` Defect)
 
-**Date**: 2025-07-17  
-**Status**: ROOT CAUSE CONFIRMED — fix applied, models require re-export  
+**Date**: 2025-07-17 (root cause), updated 2026-04-30  
+**Status**: **STABLE** — V4 precision + protobuf surgery; `.float()` reverted  
 **Severity**: Critical — corrupts all multi-block batch prefill for prompts > batch_size tokens
 
 ### Summary
@@ -1305,28 +1449,56 @@ Block 1 prefill uses `current_pos=0`. The ANE's fallback to the trace-time const
 
 This is why the bug is invisible for prompts ≤ `batch_size` tokens, and only manifests for multi-block prompts.
 
-### Fix
+### Fix: V4 Precision + Post-Combine Protobuf Surgery
 
-**File**: `anemll/models/qwen3_5_model.py`  
-**Both infer (single-token decode) and prefill (batch) paths.**
+#### Why `.float()` in model code was reverted
 
-Force `.float()` on key/value states before writing to the fp16 state tensor. This guarantees coremltools always inserts a `cast` op between `read_state` and `slice_update`:
+The initial fix added `.float()` casts to KV cache writes in `qwen3_5_model.py`:
 
 ```python
-# Before (vulnerable):
-k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_states.squeeze(0)
-v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_states.squeeze(0)
-
-# After (fixed):
-key_write = key_states.squeeze(0).float()    # force fp32 promotion
+# REVERTED — causes ANE compiler failure on large chunks
+key_write = key_states.squeeze(0).float()    # makes traced graph too large
 value_write = value_states.squeeze(0).float()
-k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write   # coremltools inserts cast
+```
+
+This was **reverted** because:
+1. The `.float()` casts increase the traced graph size, causing some chunks to
+   exceed ANE compiler limits and fail to compile
+2. For prefill chunks, `combine.py` re-runs MIL optimization that strips the
+   casts as redundant, restoring the broken `read_state → slice_update` pattern
+
+#### Production fix: two-pronged approach
+
+The production model code has **no `.float()` casts** on KV cache writes:
+
+```python
+# Production code (no .float() — V4 precision handles this at export time)
+key_write = key_states.squeeze(0)
+value_write = value_states.squeeze(0)
+k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write
 v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_write
 ```
 
-This produces the MIL pattern `read_state → cast → slice_update` for ALL chunks, which the ANE handles correctly.
+Instead, the fix is applied at the **export/compile pipeline level**:
 
-**Note**: This fix changes the traced graph. Models must be **re-exported** (`export.py`), **re-combined** (`combine.py`), and **re-compiled** (`compile.py`) for the fix to take effect. Existing compiled `.mlmodelc` files will still have the bug.
+1. **V4 precision policy** (`export.py`, `--v4-precision`, ON by default):  
+   The `_make_v4_selector()` marks `kv_cache_state` ops in F-layers as FP32
+   during coremltools conversion. This creates `cast` ops between `read_state`
+   and `slice_update` in the exported `.mlpackage` files.
+
+2. **Post-combine protobuf surgery** (`fix_combined_protobuf.py`):  
+   After `combine.py` merges infer+prefill into multi-function packages, MIL
+   optimization strips the V4 casts. This script directly edits the CoreML
+   protobuf to re-inject cast chains (`FP16→FP32` before `slice_update`,
+   `FP32→FP16` after), bypassing MIL optimization entirely.
+
+The pipeline is:
+```bash
+export.py (V4 adds casts) → combine.py (MIL strips some) → fix_combined_protobuf.py (re-injects) → compile.py
+```
+
+This produces the MIL pattern `read_state → cast → slice_update` for ALL chunks,
+which the ANE handles correctly.
 
 ### Diagnostic Scripts
 
@@ -1369,4 +1541,4 @@ This ANE `slice_update` defect is not specific to Qwen3.5. **Any model** that:
 - `qwen2_5_model.py` — same pattern
 - Any future model with 4D state tensors and dynamic position writes
 
-The safest mitigation is to **always force a type promotion** (`.float()`) before writing to state tensors, ensuring coremltools always generates a `cast` between `read_state` and `slice_update`.
+The safest mitigation is to **ensure a type promotion cast exists** between `read_state` and `slice_update` — either via the V4 precision policy at export time (preferred, as `.float()` in model code can cause ANE compiler failures on large chunks) or via post-combine protobuf surgery to re-inject stripped casts.

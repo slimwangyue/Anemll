@@ -61,6 +61,8 @@ class Qwen35TextConfig:
     rope_theta: float = 10000000.0
     rope_type: str = "default"
     partial_rotary_factor: float = 1.0
+    mrope_section: List[int] | None = None
+    mrope_interleaved: bool = False
     layer_types: List[str] | None = None
     attn_output_gate: bool = False
     linear_num_key_heads: int = 0
@@ -92,6 +94,8 @@ class Qwen35TextConfig:
             rope_theta=float(rope.get("rope_theta", 10000000.0)),
             rope_type=str(rope.get("rope_type", "default")),
             partial_rotary_factor=float(rope.get("partial_rotary_factor", 1.0)),
+            mrope_section=list(rope.get("mrope_section", [])) or None,
+            mrope_interleaved=bool(rope.get("mrope_interleaved", False)),
             layer_types=list(layer_types) if isinstance(layer_types, list) else [],
             attn_output_gate=bool(data.get("attn_output_gate", False)),
             linear_num_key_heads=int(data.get("linear_num_key_heads", 0)),
@@ -259,7 +263,14 @@ def _l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
 
 
 class Qwen35RotaryEmbedding(nn.Module):
-    """RoPE cache with partial-rotary support."""
+    """RoPE cache with partial-rotary and MRoPE support.
+
+    When mrope_section is set (e.g. [11, 11, 10]), position_ids should be
+    (3,) for single-token or (3, batch_size) for prefill.  Each of the 3
+    rows selects positions for temporal / height / width frequency groups.
+    For text-only input all 3 rows are identical and MRoPE collapses to
+    standard 1D RoPE.
+    """
 
     def __init__(self, config: Qwen35Config) -> None:
         super().__init__()
@@ -267,6 +278,8 @@ class Qwen35RotaryEmbedding(nn.Module):
         self.rotary_dim = max(2, int(self.head_dim * config.text_config.partial_rotary_factor))
         if self.rotary_dim % 2 != 0:
             self.rotary_dim -= 1
+
+        self.mrope_section = config.text_config.mrope_section  # e.g. [11,11,10] or None
 
         inv_freq = 1.0 / (
             config.text_config.rope_theta
@@ -286,12 +299,54 @@ class Qwen35RotaryEmbedding(nn.Module):
         self.sin_cached = emb.sin().unsqueeze(0)
 
     def get(self, x: torch.Tensor, position_ids: torch.LongTensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Look up cos/sin for given positions.
+
+        position_ids shape:
+          - MRoPE:   (3, seq_len) — fixed contract for Qwen3.5 export/runtime
+          - 1D RoPE: (seq_len,) or (1, seq_len) — non-MRoPE models only
+        Returns (cos, sin) with shape (1, seq_len, rotary_dim).
+        For MRoPE the rotary_dim frequencies are sectioned per mrope_section.
+        """
+        if self.mrope_section is not None:
+            # MRoPE: position_ids must always be [3, seq_len]. No dim() branching.
+            return self._get_mrope(x, position_ids)
+
+        # Standard 1D path (non-MRoPE models only)
         if position_ids.dim() == 1:
             pos_ids = position_ids
         else:
             pos_ids = position_ids.squeeze(0)
         cos = self.cos_cached[:, pos_ids].to(x.dtype)
         sin = self.sin_cached[:, pos_ids].to(x.dtype)
+        return cos, sin
+
+    def _get_mrope(self, x: torch.Tensor, position_ids: torch.LongTensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """MRoPE: select per-section cos/sin from 3D position_ids (3, seq_len)."""
+        section = self.mrope_section  # e.g. [11, 11, 10]
+        # Double section sizes for full rotary_dim (cos pairs)
+        section2 = [s * 2 for s in section]  # [22, 22, 20]
+
+        # Gather cos/sin for each of the 3 position dimensions
+        # cos_cached shape: (1, max_pos, rotary_dim)
+        cos_all = []  # will hold 3 tensors of shape (1, seq_len, rotary_dim)
+        sin_all = []
+        for dim_idx in range(3):
+            pos = position_ids[dim_idx]  # (seq_len,)
+            cos_all.append(self.cos_cached[:, pos])  # (1, seq_len, rotary_dim)
+            sin_all.append(self.sin_cached[:, pos])
+
+        # Split by section and pick the right dimension for each section
+        cos_parts = []
+        sin_parts = []
+        offset = 0
+        for sec_idx, sec_size in enumerate(section2):
+            dim_idx = sec_idx % 3
+            cos_parts.append(cos_all[dim_idx][:, :, offset:offset + sec_size])
+            sin_parts.append(sin_all[dim_idx][:, :, offset:offset + sec_size])
+            offset += sec_size
+
+        cos = torch.cat(cos_parts, dim=-1).to(x.dtype)
+        sin = torch.cat(sin_parts, dim=-1).to(x.dtype)
         return cos, sin
 
 
@@ -427,15 +482,17 @@ class Qwen35FullAttention(nn.Module):
         return query_states[..., : self.head_dim]
 
     def get_new_kv_cache(
-        self, hidden_states: torch.Tensor, current_pos: torch.LongTensor
+        self, hidden_states: torch.Tensor, position_ids: torch.LongTensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        # TODO(parity): Keep API/shape contract aligned with qwen_model.py::QwenAttention.get_new_kv_cache.
-        # Current version is a bring-up approximation for full_attention-only layers.
+        """Compute Q/K/V/gate with RoPE for decode (single-token).
+
+        position_ids: [3, seq_len] for MRoPE (Qwen3.5 fixed contract).
+                      Passed directly to rotary.get() — no dim() branching.
+        """
         query_states, key_states, value_states, gate = self._project_qkvg(hidden_states)
         query_states = self.q_norm(query_states)
         key_states = self.k_norm(key_states)
-        pos = current_pos.reshape(1).to(device=hidden_states.device, dtype=torch.long)
-        cos, sin = self.rotary.get(hidden_states, pos)
+        cos, sin = self.rotary.get(hidden_states, position_ids)
         query_states, key_states = apply_rotary_pos_emb_single(
             query_states, key_states, cos, sin, self.rotary.rotary_dim
         )
@@ -1809,8 +1866,8 @@ class Qwen35Model(nn.Module):
         key_write = key_states.squeeze(0)
         value_write = value_states.squeeze(0)
         if k_cache is not None and v_cache is not None:
-            k_cache[_kv_idx, :, pos:pos+1, :] = key_write.float()
-            v_cache[_kv_idx, :, pos:pos+1, :] = value_write.float()
+            k_cache[_kv_idx, :, pos:pos+1, :] = key_write
+            v_cache[_kv_idx, :, pos:pos+1, :] = value_write
             key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
             value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
@@ -1818,8 +1875,8 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx, :, pos:pos+1, :] = key_write.float()
-            kv_cache_0[value_idx, :, pos:pos+1, :] = value_write.float()
+            kv_cache_0[key_idx, :, pos:pos+1, :] = key_write
+            kv_cache_0[value_idx, :, pos:pos+1, :] = value_write
             key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
             value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_regular(
@@ -2042,8 +2099,8 @@ class Qwen35Model(nn.Module):
         key_write = key_states.squeeze(0)
         value_write = value_states.squeeze(0)
         if k_cache is not None and v_cache is not None:
-            k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write.float()
-            v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_write.float()
+            k_cache[_kv_idx, :, pos:pos+seq_len, :] = key_write
+            v_cache[_kv_idx, :, pos:pos+seq_len, :] = value_write
             key_cache = k_cache[_kv_idx : _kv_idx + 1].squeeze(0)
             value_cache = v_cache[_kv_idx : _kv_idx + 1].squeeze(0)
         else:
@@ -2051,8 +2108,8 @@ class Qwen35Model(nn.Module):
                 raise ValueError("Full-attention export requires either split K/V cache tensors or kv_cache_0")
             key_idx = local_layer_idx
             value_idx = local_layer_idx + local_num_layers
-            kv_cache_0[key_idx, :, pos:pos+seq_len, :] = key_write.float()
-            kv_cache_0[value_idx, :, pos:pos+seq_len, :] = value_write.float()
+            kv_cache_0[key_idx, :, pos:pos+seq_len, :] = key_write
+            kv_cache_0[value_idx, :, pos:pos+seq_len, :] = value_write
             key_cache = kv_cache_0[key_idx : key_idx + 1].squeeze(0)
             value_cache = kv_cache_0[value_idx : value_idx + 1].squeeze(0)
         attn_out = layer.self_attn.forward_prefill(

@@ -158,7 +158,7 @@ class DedupEngine:
         for ci in range(self.num_chunks):
             inp = {
                 "hidden_states": hidden.astype(np.float16),
-                "position_ids": np.array([pos], dtype=np.int32),
+                "position_ids": np.array([[pos], [pos], [pos]], dtype=np.int32),
                 "causal_mask": mask,
                 "current_pos": np.array([pos], dtype=np.int32),
             }

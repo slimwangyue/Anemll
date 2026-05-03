@@ -405,7 +405,7 @@ class Qwen35Converter(BaseConverter):
 
         wrapper = Wrapper(model).eval()
         sample_input_ids = torch.zeros((1, 1), dtype=torch.int32, device=TEST_DEVICE)
-        sample_position_ids = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
+        sample_position_ids = torch.zeros((3, 1), dtype=torch.int32, device=TEST_DEVICE)
         sample_causal_mask = torch.zeros(
             (1, 1, 1, self.context_length), dtype=torch.float16, device=TEST_DEVICE
         )
@@ -588,7 +588,7 @@ class Qwen35Converter(BaseConverter):
         wrapper = FFNWrapper(model, start_layer, end_layer).eval()
         cfg = model.config
         hidden_states = torch.zeros((1, 1, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE)
-        position_ids = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
+        position_ids = torch.zeros((3, 1), dtype=torch.int32, device=TEST_DEVICE)
         # causal_mask: full CTX width for attention masking.
         causal_mask = torch.zeros((1, 1, 1, self.context_length), dtype=torch.float16, device=TEST_DEVICE)
         current_pos = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
@@ -782,7 +782,7 @@ class Qwen35Converter(BaseConverter):
         hidden_states = torch.zeros(
             (1, self.batch_size, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
         )
-        position_ids = torch.zeros((self.batch_size,), dtype=torch.int32, device=TEST_DEVICE)
+        position_ids = torch.zeros((3, self.batch_size), dtype=torch.int32, device=TEST_DEVICE)
         # causal_mask: full CTX width for attention masking.
         causal_mask = torch.zeros(
             (1, 1, self.batch_size, self.context_length), dtype=torch.float16, device=TEST_DEVICE
@@ -1013,7 +1013,7 @@ class Qwen35Converter(BaseConverter):
         hidden_states = torch.zeros(
             (1, export_seq_len, cfg.hidden_size), dtype=torch.float16, device=TEST_DEVICE
         )
-        position_ids = torch.arange(export_seq_len, dtype=torch.int32, device=TEST_DEVICE)
+        position_ids = torch.zeros((3, export_seq_len), dtype=torch.int32, device=TEST_DEVICE)
         causal_mask = torch.zeros(
             (1, 1, export_seq_len, self.context_length), dtype=torch.float16, device=TEST_DEVICE
         )
@@ -1155,13 +1155,13 @@ class Qwen35Converter(BaseConverter):
         wrapper = MonolithicWrapper(model, is_prefill, argmax_in_model).eval()
         if is_prefill:
             sample_input_ids = torch.zeros((1, self.batch_size), dtype=torch.int32, device=TEST_DEVICE)
-            sample_position_ids = torch.zeros((self.batch_size,), dtype=torch.int32, device=TEST_DEVICE)
+            sample_position_ids = torch.zeros((3, self.batch_size), dtype=torch.int32, device=TEST_DEVICE)
             sample_causal_mask = torch.zeros(
                 (1, 1, self.batch_size, self.context_length), dtype=torch.float16, device=TEST_DEVICE
             )
         else:
             sample_input_ids = torch.zeros((1, 1), dtype=torch.int32, device=TEST_DEVICE)
-            sample_position_ids = torch.zeros((1,), dtype=torch.int32, device=TEST_DEVICE)
+            sample_position_ids = torch.zeros((3, 1), dtype=torch.int32, device=TEST_DEVICE)
             sample_causal_mask = torch.zeros(
                 (1, 1, 1, self.context_length), dtype=torch.float16, device=TEST_DEVICE
             )

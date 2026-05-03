@@ -139,6 +139,77 @@ private typealias Float16 = Float
         let unlock: (() -> Void)?
     }
 
+    // MARK: - MRoPE Position IDs
+
+    /// Describes an image token span within a prefill batch for MRoPE position computation.
+    /// Image tokens use position [0, h, w] where h = visualRow / gridW, w = visualRow % gridW.
+    public struct ImageSpan {
+        public let startOffset: Int   // offset within the batch where image tokens begin
+        public let numTokens: Int     // total image tokens (gridH * gridW)
+        public let gridW: Int         // vision grid width  (imageWidth / 32)
+        public let gridH: Int         // vision grid height (imageHeight / 32)
+        public init(startOffset: Int, numTokens: Int, gridW: Int, gridH: Int) {
+            self.startOffset = startOffset
+            self.numTokens = numTokens
+            self.gridW = gridW
+            self.gridH = gridH
+        }
+    }
+
+    /// Build MRoPE position_ids [3, seqLen] for a batch starting at `startPos`.
+    /// Text tokens: [p, p, p].  Image tokens (via `imageSpans`): [0, h, w].
+    private func buildMRoPEPositionIds(
+        startPos: Int,
+        seqLen: Int,
+        imageSpans: [ImageSpan] = []
+    ) throws -> MLMultiArray {
+        let positionIds = try MLMultiArray(
+            shape: [3, NSNumber(value: seqLen)], dataType: .int32
+        )
+        let ptr = positionIds.dataPointer.assumingMemoryBound(to: Int32.self)
+        // Default: text tokens — all 3 dims = global position [p, p, p]
+        for i in 0..<seqLen {
+            let p = Int32(startPos + i)
+            ptr[i] = p                     // dim 0: temporal
+            ptr[seqLen + i] = p            // dim 1: height
+            ptr[2 * seqLen + i] = p        // dim 2: width
+        }
+        // Override image token positions: [0, h, w]
+        for span in imageSpans {
+            for r in 0..<span.numTokens {
+                let offset = span.startOffset + r
+                guard offset >= 0 && offset < seqLen else { continue }
+                let h = r / span.gridW
+                let w = r % span.gridW
+                ptr[offset] = 0                         // dim 0: temporal = 0
+                ptr[seqLen + offset] = Int32(h)         // dim 1: height
+                ptr[2 * seqLen + offset] = Int32(w)     // dim 2: width
+            }
+        }
+        if debugLevel >= 2 {
+            // Validation: log position_ids shape and sample values
+            let sample0 = seqLen > 0 ? ptr[0] : -1
+            let sample1 = seqLen > 0 ? ptr[seqLen] : -1
+            let sample2 = seqLen > 0 ? ptr[2 * seqLen] : -1
+            print("[MRoPE] position_ids [\(3), \(seqLen)] first=[t:\(sample0), h:\(sample1), w:\(sample2)] imageSpans=\(imageSpans.count)")
+        }
+        return positionIds
+    }
+
+    /// Build MRoPE decode position_ids [3, 1] for a single text token at `pos`.
+    private func buildMRoPEDecodePositionIds(pos: Int) throws -> MLMultiArray {
+        let positionIds = try MLMultiArray(shape: [3, 1], dataType: .int32)
+        let ptr = positionIds.dataPointer.assumingMemoryBound(to: Int32.self)
+        let p = Int32(pos)
+        ptr[0] = p  // temporal
+        ptr[1] = p  // height
+        ptr[2] = p  // width
+        if debugLevel >= 2 {
+            print("[MRoPE] decode position_ids [3, 1] pos=[\(p), \(p), \(p)]")
+        }
+        return positionIds
+    }
+
     private func getFloatBuffer(from array: MLMultiArray) throws -> FloatBuffer {
         if let pixelBuffer = array.pixelBuffer {
             CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
@@ -878,7 +949,7 @@ private typealias Float16 = Float
         if argmaxInModel && isMonolithic {
             // int32 input arrays - regular MLMultiArray
             argmaxTokenArray = try MLMultiArray(shape: [1, 1], dataType: .int32)
-            argmaxPositionIds = try MLMultiArray(shape: [1], dataType: .int32)
+            argmaxPositionIds = try MLMultiArray(shape: [3, 1], dataType: .int32)
             argmaxCurrentPosArray = try MLMultiArray(shape: [1], dataType: .int32)
 
             // Causal mask [1, 1, 1, contextLength]
@@ -933,6 +1004,10 @@ private typealias Float16 = Float
                 "causal_mask": argmaxCausalMask!,
                 "current_pos": argmaxCurrentPosArray!
             ])
+
+            if debugLevel >= 1 {
+                print("[MRoPE] Argmax decode position_ids shape: \(argmaxPositionIds!.shape.map { $0.intValue })")
+            }
 
             // Pre-allocate prediction options
             argmaxInferOptions = MLPredictionOptions()
@@ -1739,6 +1814,9 @@ private typealias Float16 = Float
 
             if debugLevel >= 1 {
                 print("\nPrefill batch: \(batchPos) to \(batchEnd), full batch of \(batchSize)")
+                if batchPos == 0 {
+                    print("[MRoPE] CoreML prefill expects position_ids [3, \(batchSize)]")
+                }
             }
             
             // Create input tensor for current batch (full batch)
@@ -1747,11 +1825,8 @@ private typealias Float16 = Float
                 batchInput[[0, i] as [NSNumber]] = NSNumber(value: contextTokens[batchPos + i])
             }
             
-            // Generate position IDs
-            let positionIds = try MLMultiArray(shape: [NSNumber(value: batchSize)], dataType: .int32)
-            for i in 0..<batchSize {
-                positionIds[i] = NSNumber(value: batchPos + i)
-            }
+            // Generate MRoPE position IDs [3, batchSize] — text tokens: [p, p, p]
+            let positionIds = try buildMRoPEPositionIds(startPos: batchPos, seqLen: batchSize)
             
             // Create batch causal mask
             let batchCausalMask = try MLMultiArray(
@@ -2012,11 +2087,8 @@ private typealias Float16 = Float
                 }
             }
 
-            // Generate position IDs for full batch (padded positions don't matter with update_mask)
-            let positionIds = try MLMultiArray(shape: [NSNumber(value: batchSize)], dataType: .int32)
-            for i in 0..<batchSize {
-                positionIds[i] = NSNumber(value: batchPos + i)
-            }
+            // Generate MRoPE position IDs [3, batchSize] — text tokens: [p, p, p]
+            let positionIds = try buildMRoPEPositionIds(startPos: batchPos, seqLen: batchSize)
 
             // Create batch causal mask
             let batchCausalMask = try MLMultiArray(
@@ -2145,9 +2217,8 @@ private typealias Float16 = Float
             let tokenArray = try MLMultiArray(shape: [1, 1], dataType: .int32)
             tokenArray[[0, 0] as [NSNumber]] = NSNumber(value: token)
 
-            // Single position ID
-            let positionIds = try MLMultiArray(shape: [1], dataType: .int32)
-            positionIds[0] = NSNumber(value: batchPos)
+            // MRoPE position ID [3, 1] — text token: [p, p, p]
+            let positionIds = try buildMRoPEDecodePositionIds(pos: batchPos)
 
             // Single-token causal mask
             let singleMask = try MLMultiArray(
@@ -2424,10 +2495,13 @@ private typealias Float16 = Float
             debugCapturedEmbeddings = copyMLMultiArray(hiddenStates)
         }
 
-        // Create position IDs (1D) - use currentPos-1 since currentPos is 1-indexed
+        // Create MRoPE position IDs [3, 1] — text decode: [p, p, p]
         let safePos = currentPos - 1
-        let positionIds = try MLMultiArray(shape: [1], dataType: .int32)
-        positionIds[0] = NSNumber(value: safePos)
+        let positionIds = try buildMRoPEDecodePositionIds(pos: safePos)
+
+        if debugLevel >= 1 {
+            print("[MRoPE] decode position_ids [3, 1] pos=[\(safePos), \(safePos), \(safePos)]")
+        }
 
         // Get causal mask for single token - use safePos to match position_ids
         // At position N, we should see positions 0 to N (not 0 to N+1)
@@ -2873,9 +2947,8 @@ private typealias Float16 = Float
         let tokenArray = try MLMultiArray(shape: [1, 1], dataType: .int32)
         tokenArray[[0, 0] as [NSNumber]] = NSNumber(value: lastToken)
 
-        // Create position IDs
-        let positionIds = try MLMultiArray(shape: [1], dataType: .int32)
-        positionIds[0] = NSNumber(value: safePos)
+        // Create MRoPE position IDs [3, 1] — text decode: [p, p, p]
+        let positionIds = try buildMRoPEDecodePositionIds(pos: safePos)
 
         // Get causal mask for single token - use safePos (currentPos - 1) to match position_ids
         // At position N, we should see positions 0 to N (not 0 to N+1)
@@ -3212,7 +3285,11 @@ private typealias Float16 = Float
 
         // Update int32 values using direct pointer access
         tokenArray.dataPointer.assumingMemoryBound(to: Int32.self)[0] = Int32(lastToken)
-        positionIds.dataPointer.assumingMemoryBound(to: Int32.self)[0] = Int32(safePos)
+        // MRoPE position_ids [3, 1] — text decode: [p, p, p]
+        let posPtr = positionIds.dataPointer.assumingMemoryBound(to: Int32.self)
+        posPtr[0] = Int32(safePos)  // temporal
+        posPtr[1] = Int32(safePos)  // height
+        posPtr[2] = Int32(safePos)  // width
         currentPosArray.dataPointer.assumingMemoryBound(to: Int32.self)[0] = Int32(safePos)
 
         // Use pre-allocated causal mask with efficient single-value update
