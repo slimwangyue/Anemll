@@ -88,3 +88,5 @@ qwen3_5_4B_delta_fp32_test/
 qwen3_5_4B_milestone_3.4_fix/
 qwen3_5_2b_milestone4/
 qwen3_5_4b_milestone4/
+local_llm.xcodeproj/project.xcworkspace/xcshareddata/
+local_llm/ThirdParty/

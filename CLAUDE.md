@@ -310,3 +310,17 @@ The macOS ANEMLLChat app should match CLI (`anemllcli`) behavior:
 #QWEN TEST
 export_coreml.py is a test file for Qwen export development
 test_coreml_kvcache_sequential.py is a test file for Qwen inference development
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues (`slimwangyue/Anemll`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default label vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context layout — `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
